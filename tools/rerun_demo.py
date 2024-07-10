@@ -6,11 +6,14 @@ import torch
 
 from mini_dust3r.api import OptimizedResult, inferece_dust3r, log_optimized_result
 from mini_dust3r.model import AsymmetricCroCo3DStereo
-
+import os
+from smplx import SMPL
 
 def create_blueprint(image_name_list: list[str], log_path: Path) -> rrb.Blueprint:
     # dont show 2d views if there are more than 4 images as to not clutter the view
-    if len(image_name_list) > 4:
+    len_images = len(os.listdir(image_name_list))
+    
+    if len_images > 4:
         blueprint = rrb.Blueprint(
             rrb.Horizontal(
                 rrb.Spatial3DView(origin=f"{log_path}"),
@@ -30,7 +33,7 @@ def create_blueprint(image_name_list: list[str], log_path: Path) -> rrb.Blueprin
                                     "+ $origin/**",
                                 ],
                             )
-                            for i in range(len(image_name_list))
+                            for i in range(len_images)
                         ]
                     ),
                 ],
@@ -48,7 +51,6 @@ def main(image_dir: Path):
         device = "cuda"
     else:
         device = "cpu"
-
     model = AsymmetricCroCo3DStereo.from_pretrained(
         "naver/DUSt3R_ViTLarge_BaseDecoder_512_dpt"
     ).to(device)
@@ -59,8 +61,10 @@ def main(image_dir: Path):
         device=device,
         batch_size=1,
     )
+
     blueprint = create_blueprint(image_dir, "world")
     rr.send_blueprint(blueprint)
+
     log_optimized_result(optimized_results, Path("world"))
 
 

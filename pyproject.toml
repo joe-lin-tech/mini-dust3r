@@ -14,9 +14,9 @@ classifiers = [
 ]
 
 dependencies=[
-    "roma>=1.5",
-    "opencv-python>=4.9.0.80",
-    "gradio-rerun>=0.0.1",
+    "roma",
+    "opencv-python",
+    "gradio-rerun",
     "open3d>=0.18.0",
     "safetensors>=0.4.3",
     "torch>=2.0.0",

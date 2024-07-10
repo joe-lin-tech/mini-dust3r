@@ -29,6 +29,17 @@ def make_pairs(
                 pairsid.add((i, idx) if i < idx else (idx, i))
         for i, j in pairsid:
             pairs.append((imgs[i], imgs[j]))
+
+    elif scene_graph.startswith("window"):
+        winsize = int(scene_graph.split("-")[1]) if "-" in scene_graph else 3
+        pairsid = set()
+        for i in range(len(imgs)):
+            for j in range(1, winsize + 1):
+                idx = i + j
+                if idx < len(imgs):
+                    pairsid.add((i, idx) if i < idx else (idx, i))
+        for i, j in pairsid:
+            pairs.append((imgs[i], imgs[j]))
     elif scene_graph.startswith("oneref"):
         refid = int(scene_graph.split("-")[1]) if "-" in scene_graph else 0
         for j in range(len(imgs)):

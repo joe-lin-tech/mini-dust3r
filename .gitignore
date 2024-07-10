@@ -169,3 +169,6 @@ data/
 checkpoints/
 examples/
 gradio_cached_examples/
+
+logs 
+results

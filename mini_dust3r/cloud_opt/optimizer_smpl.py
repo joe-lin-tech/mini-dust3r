@@ -9,56 +9,87 @@ import torch
 import torch.nn as nn
 
 from mini_dust3r.cloud_opt.base_opt import BasePCOptimizer
+from mini_dust3r.cloud_opt.optimizer import PointCloudOptimizer
 from mini_dust3r.utils.geometry import xy_grid, geotrf
 from mini_dust3r.utils.device import to_cpu, to_numpy
 
 
-class PointCloudOptimizer(BasePCOptimizer):
+class PointCloudOptimizerSMPL(BasePCOptimizer):
     """ Optimize a global scene, given a list of pairwise observations.
     Graph node: images
     Graph edges: observations = (pred1, pred2)
     """
 
-    def __init__(self, *args, optimize_pp=False, focal_break=20, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, old_scene:PointCloudOptimizer, smpl_scale_info, smpl_contact_info, init_scale, *args, 
+                optimize_pp=False, 
+                focal_break=20, 
+                min_conf_thr=3,
+                base_scale=1.0,
+                allow_pw_adaptors=False,
+                pw_break=20,
+                rand_pose=torch.randn,
+                **kwargs):
+        super(BasePCOptimizer, self).__init__(*args, **kwargs)
 
+        self.smpl_scale_info = smpl_scale_info
+        self.smpl_contact_info = smpl_contact_info
+        self.smpl_dist = nn.L1Loss()
+
+        # adding thing to optimize
+        self.global_scale = nn.Parameter(torch.tensor(np.log(init_scale), dtype=torch.float32))
+        self.global_scale.requires_grad_(True)
+
+        # directly copy from the old scenes
+        self.edges = old_scene.edges
+        self.is_symmetrized = set(self.edges) == {(j, i) for i, j in self.edges}
+        self.dist = old_scene.dist
+        self.verbose = old_scene.verbose
+
+        self.n_imgs = self._check_edges()
+        
+        self.pred_i = old_scene.pred_i
+        self.pred_j = old_scene.pred_j
+        self.imshapes = old_scene.imshapes
+        
+        self.min_conf_thr = min_conf_thr
+        self.conf_trf = old_scene.conf_trf
+        self.conf_i = old_scene.conf_i
+        self.conf_j = old_scene.conf_j
+        self.im_conf = old_scene.im_conf
+         
+        self.base_scale = base_scale
+        self.norm_pw_scale = True
+        self.pw_break = pw_break
+        self.POSE_DIM = 7
+        self.pw_poses =  old_scene.pw_poses  # pairwise poses
+        self.pw_adaptors = old_scene.pw_adaptors # slight xy/z adaptation
+        self.pw_adaptors.requires_grad_(allow_pw_adaptors)
+        self.has_im_poses = False
+        self.rand_pose = rand_pose
+        self.imgs = old_scene.imgs
         self.has_im_poses = True  # by definition of this class
         self.focal_break = focal_break
 
-        # adding thing to optimize
-        self.im_depthmaps = nn.ParameterList(torch.randn(H, W)/10-3 for H, W in self.imshapes)  # log(depth)
-        self.im_poses = nn.ParameterList(self.rand_pose(self.POSE_DIM) for _ in range(self.n_imgs))  # camera poses
-        self.im_focals = nn.ParameterList(torch.FloatTensor(
-            [self.focal_break*np.log(max(H, W))]) for H, W in self.imshapes)  # camera intrinsics
-        self.im_pp = nn.ParameterList(torch.zeros((2,)) for _ in range(self.n_imgs))  # camera intrinsics
+        self.im_depthmaps =  old_scene.im_depthmaps  # log(depth)
+        self.im_poses = old_scene.im_poses  # camera poses
+        self.im_focals = old_scene.im_focals  # camera intrinsics
+        self.im_pp = old_scene.im_pp  # camera intrinsics
         self.im_pp.requires_grad_(optimize_pp)
 
         self.imshape = self.imshapes[0]
         im_areas = [h*w for h, w in self.imshapes]
         self.max_area = max(im_areas)
 
-        # adding thing to optimize
-        self.im_depthmaps = ParameterStack(self.im_depthmaps, is_param=True, fill=self.max_area)
-        self.im_poses = ParameterStack(self.im_poses, is_param=True)
-        self.im_focals = ParameterStack(self.im_focals, is_param=True)
-        self.im_pp = ParameterStack(self.im_pp, is_param=True)
-        self.register_buffer('_pp', torch.tensor([(w/2, h/2) for h, w in self.imshapes]))
-        self.register_buffer('_grid', ParameterStack(
-            [xy_grid(W, H, device=self.device) for H, W in self.imshapes], fill=self.max_area))
-
-        # pre-compute pixel weights
-        self.register_buffer('_weight_i', ParameterStack(
-            [self.conf_trf(self.conf_i[i_j]) for i_j in self.str_edges], fill=self.max_area))
-        self.register_buffer('_weight_j', ParameterStack(
-            [self.conf_trf(self.conf_j[i_j]) for i_j in self.str_edges], fill=self.max_area))
-
-        # precompute aa
-        self.register_buffer('_stacked_pred_i', ParameterStack(self.pred_i, self.str_edges, fill=self.max_area))
-        self.register_buffer('_stacked_pred_j', ParameterStack(self.pred_j, self.str_edges, fill=self.max_area))
-        self.register_buffer('_ei', torch.tensor([i for i, j in self.edges]))
-        self.register_buffer('_ej', torch.tensor([j for i, j in self.edges]))
-        self.total_area_i = sum([im_areas[i] for i, j in self.edges])
-        self.total_area_j = sum([im_areas[j] for i, j in self.edges])
+        self._pp = old_scene._pp
+        self._grid = old_scene._grid
+        self._weight_i = old_scene._weight_i
+        self._weight_j = old_scene._weight_j
+        self._stacked_pred_i = old_scene._stacked_pred_i
+        self._stacked_pred_j = old_scene._stacked_pred_j
+        self._ei = old_scene._ei
+        self._ej = old_scene._ej
+        self.total_area_i = old_scene.total_area_i
+        self.total_area_j = old_scene.total_area_j
 
     def _check_all_imgs_are_selected(self, msk):
         assert np.all(self._get_msk_indices(msk) == np.arange(self.n_imgs)), 'incomplete mask!'
@@ -152,6 +183,13 @@ class PointCloudOptimizer(BasePCOptimizer):
     def get_im_poses(self):  # cam to world
         cam2world = self._get_poses(self.im_poses)
         return cam2world
+    
+    def get_im_poses_scale(self):  # cam to world
+        cam2world = self._get_poses(self.im_poses)
+        scaled_translations = cam2world[:, :3, 3] * self.global_scale.exp()
+        new_cam2world = cam2world.clone()
+        new_cam2world[:, :3, 3] = scaled_translations
+        return new_cam2world
 
     def _set_depthmap(self, idx, depth, force=False):
         depth = _ravel_hw(depth, self.max_area)
@@ -166,6 +204,15 @@ class PointCloudOptimizer(BasePCOptimizer):
         if not raw:
             res = [dm[:h*w].view(h, w) for dm, (h, w) in zip(res, self.imshapes)]
         return res
+    
+    def get_depthmaps_scale(self, raw=False):
+        res = self.im_depthmaps.exp()
+        scale = self.global_scale.exp()
+        res = res * scale
+        if not raw:
+            res = [dm[:h*w].view(h, w) for dm, (h, w) in zip(res, self.imshapes)]
+     
+        return res
 
     def depth_to_pts3d(self, global_coord=True):
         # Get depths and  projection params if not provided
@@ -177,6 +224,7 @@ class PointCloudOptimizer(BasePCOptimizer):
 
         # get pointmaps in camera frame
         rel_ptmaps = _fast_depthmap_to_pts3d(depth, self._grid, focals, pp=pp)
+
         # project to world frame
         if global_coord:
             return geotrf(im_poses, rel_ptmaps)
@@ -188,13 +236,27 @@ class PointCloudOptimizer(BasePCOptimizer):
         res = self.depth_to_pts3d(global_coord=global_coord)
  
         if not raw:
-            res = [dm[:h * w].view(h, w, 3) for dm, (h, w) in zip(res, self.imshapes)]
+            res = [dm[:h*w].view(h, w, 3) for dm, (h, w) in zip(res, self.imshapes)]
         return res
+    
+ 
 
     def forward(self):
         pw_poses = self.get_pw_poses()  # cam-to-world
         pw_adapt = self.get_adaptors().unsqueeze(1)
         proj_pts3d = self.get_pts3d(raw=True)
+
+        depth_scale = self.get_depthmaps_scale(raw=True)
+        poses_scale = self.get_im_poses_scale()
+
+    
+        smpl_scale_loss = self.smpl_dist(depth_scale[self.smpl_scale_info[:, 0].long(), 
+                                                     self.smpl_scale_info[:, 1].long()*self.imshape[1] + self.smpl_scale_info[:, 2].long()], 
+                                                     self.smpl_scale_info[:, 3])
+ 
+        joint_global_1 = torch.einsum("bij,bj->bi", poses_scale[self.smpl_contact_info[:, 0].long()], self.smpl_contact_info[:, 1:5])
+        joint_global_2 = torch.einsum("bij,bj->bi", poses_scale[self.smpl_contact_info[:, 5].long()], self.smpl_contact_info[:, 6:])
+        smpl_contact_loss = self.smpl_dist(joint_global_1[:, :3], joint_global_2[:, :3])
 
         # rotate pairwise prediction according to pw_poses
         aligned_pred_i = geotrf(pw_poses, pw_adapt * self._stacked_pred_i)
@@ -203,7 +265,23 @@ class PointCloudOptimizer(BasePCOptimizer):
         # compute the less
         li = self.dist(proj_pts3d[self._ei], aligned_pred_i, weight=self._weight_i).sum() / self.total_area_i
         lj = self.dist(proj_pts3d[self._ej], aligned_pred_j, weight=self._weight_j).sum() / self.total_area_j
-        return li + lj
+
+        return li + lj + smpl_scale_loss + smpl_contact_loss
+
+        # N = len(self.edges)
+        # batch_sz = 4
+        # li_all, lj_all = 0, 0
+        # for i in range(0, N, 4):
+        #     # rotate pairwise prediction according to pw_poses
+        #     aligned_pred_i = geotrf(pw_poses[i:i+batch_sz], pw_adapt[i:i+batch_sz] * self._stacked_pred_i[i:i+batch_sz])
+        #     aligned_pred_j = geotrf(pw_poses[i:i+batch_sz], pw_adapt[i:i+batch_sz] * self._stacked_pred_j[i:i+batch_sz])
+        #     # compute the less
+        #     li = self.dist(proj_pts3d[self._ei[i:i+batch_sz]], aligned_pred_i, weight=self._weight_i[i:i+batch_sz]).sum() / (self.total_area_i * batch_sz/N)
+        #     lj = self.dist(proj_pts3d[self._ej[i:i+batch_sz]], aligned_pred_j, weight=self._weight_j[i:i+batch_sz]).sum() / (self.total_area_j * batch_sz/N)
+        #     li_all += li
+        #     lj_all += lj
+        # return li_all + lj_all
+
 
 
 def _fast_depthmap_to_pts3d(depth, pixel_grid, focal, pp):
@@ -244,7 +322,7 @@ def _ravel_hw(tensor, fill=0):
 
 def acceptable_focal_range(H, W, minf=0.5, maxf=3.5):
     focal_base = max(H, W) / (2 * np.tan(np.deg2rad(60) / 2))  # size / 1.1547005383792515
-    return minf * focal_base, maxf*focal_base
+    return minf*focal_base, maxf*focal_base
 
 
 def apply_mask(img, msk):

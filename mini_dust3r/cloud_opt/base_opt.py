@@ -45,7 +45,7 @@ class BasePCOptimizer (nn.Module):
                          dist='l1',
                          conf='log',
                          min_conf_thr=3,
-                         base_scale=0.5,
+                         base_scale=1.0,
                          allow_pw_adaptors=False,
                          pw_break=20,
                          rand_pose=torch.randn,
@@ -75,7 +75,6 @@ class BasePCOptimizer (nn.Module):
         pred2_conf = pred2['conf']
         self.min_conf_thr = min_conf_thr
         self.conf_trf = get_conf_trf(conf)
-
         self.conf_i = NoGradParamDict({ij: pred1_conf[n] for n, ij in enumerate(self.str_edges)})
         self.conf_j = NoGradParamDict({ij: pred2_conf[n] for n, ij in enumerate(self.str_edges)})
         self.im_conf = self._compute_img_conf(pred1_conf, pred2_conf)
@@ -307,6 +306,14 @@ class BasePCOptimizer (nn.Module):
                                            niter_PnP=niter_PnP)
         else:
             raise ValueError(f'bad value for {init=}')
+        
+        # for e in range(len(self.pw_poses)):
+        #     print("before scale optmization:")
+        #     print(torch.exp(self.pw_poses[e].data[-1]))
+
+        # for idx, pose in enumerate(self.get_pw_poses()):   
+        #     print(f' (setting pose #{idx} = {pose[:3,3]})')
+
 
         return global_alignment_loop(self, **kw)
 
