@@ -4,10 +4,9 @@ from pathlib import Path
 from argparse import ArgumentParser
 import torch
 
-from mini_dust3r.api import OptimizedResult, inferece_dust3r, log_optimized_result
+from mini_dust3r.api import OptimizedResult, inference_dust3r, log_optimized_result
 from mini_dust3r.model import AsymmetricCroCo3DStereo
 import os
-from smplx import SMPL
 
 def create_blueprint(image_name_list: list[str], log_path: Path) -> rrb.Blueprint:
     # dont show 2d views if there are more than 4 images as to not clutter the view
@@ -55,7 +54,7 @@ def main(image_dir: Path):
         "naver/DUSt3R_ViTLarge_BaseDecoder_512_dpt"
     ).to(device)
 
-    optimized_results: OptimizedResult = inferece_dust3r(
+    optimized_results: OptimizedResult = inference_dust3r(
         image_dir_or_list=image_dir,
         model=model,
         device=device,

@@ -13,15 +13,15 @@ import roma
 from copy import deepcopy
 import tqdm
 
-from mini_dust3r.utils.geometry import inv, geotrf
-from mini_dust3r.utils.device import to_numpy
-from mini_dust3r.utils.image import rgb
-from mini_dust3r.viz import SceneViz, segment_sky, auto_cam_size
-from mini_dust3r.optim_factory import adjust_learning_rate_by_lr
+from mini_dust3r_old.utils.geometry import inv, geotrf
+from mini_dust3r_old.utils.device import to_numpy
+from mini_dust3r_old.utils.image import rgb
+from mini_dust3r_old.viz import SceneViz, segment_sky, auto_cam_size
+from mini_dust3r_old.optim_factory import adjust_learning_rate_by_lr
 
-from mini_dust3r.cloud_opt.commons import (edge_str, ALL_DISTS, NoGradParamDict, get_imshapes, signed_expm1, signed_log1p,
+from mini_dust3r_old.cloud_opt.commons import (edge_str, ALL_DISTS, NoGradParamDict, get_imshapes, signed_expm1, signed_log1p,
                                       cosine_schedule, linear_schedule, get_conf_trf)
-import mini_dust3r.cloud_opt.init_im_poses as init_fun
+import mini_dust3r_old.cloud_opt.init_im_poses as init_fun
 
 
 class BasePCOptimizer (nn.Module):
@@ -45,7 +45,7 @@ class BasePCOptimizer (nn.Module):
                          dist='l1',
                          conf='log',
                          min_conf_thr=3,
-                         base_scale=0.5,
+                         base_scale=1.0,
                          allow_pw_adaptors=False,
                          pw_break=20,
                          rand_pose=torch.randn,
@@ -75,7 +75,6 @@ class BasePCOptimizer (nn.Module):
         pred2_conf = pred2['conf']
         self.min_conf_thr = min_conf_thr
         self.conf_trf = get_conf_trf(conf)
-
         self.conf_i = NoGradParamDict({ij: pred1_conf[n] for n, ij in enumerate(self.str_edges)})
         self.conf_j = NoGradParamDict({ij: pred2_conf[n] for n, ij in enumerate(self.str_edges)})
         self.im_conf = self._compute_img_conf(pred1_conf, pred2_conf)
@@ -307,6 +306,14 @@ class BasePCOptimizer (nn.Module):
                                            niter_PnP=niter_PnP)
         else:
             raise ValueError(f'bad value for {init=}')
+        
+        # for e in range(len(self.pw_poses)):
+        #     print("before scale optmization:")
+        #     print(torch.exp(self.pw_poses[e].data[-1]))
+
+        # for idx, pose in enumerate(self.get_pw_poses()):   
+        #     print(f' (setting pose #{idx} = {pose[:3,3]})')
+
 
         return global_alignment_loop(self, **kw)
 

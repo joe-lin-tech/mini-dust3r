@@ -8,9 +8,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from mini_dust3r.cloud_opt.base_opt import BasePCOptimizer
-from mini_dust3r.utils.geometry import xy_grid, geotrf
-from mini_dust3r.utils.device import to_cpu, to_numpy
+from mini_dust3r_old.cloud_opt.base_opt import BasePCOptimizer
+from mini_dust3r_old.utils.geometry import xy_grid, geotrf
+from mini_dust3r_old.utils.device import to_cpu, to_numpy
 
 
 class PointCloudOptimizer(BasePCOptimizer):
@@ -167,22 +167,28 @@ class PointCloudOptimizer(BasePCOptimizer):
             res = [dm[:h*w].view(h, w) for dm, (h, w) in zip(res, self.imshapes)]
         return res
 
-    def depth_to_pts3d(self):
+    def depth_to_pts3d(self, global_coord=True):
         # Get depths and  projection params if not provided
         focals = self.get_focals()
         pp = self.get_principal_points()
+       
         im_poses = self.get_im_poses()
         depth = self.get_depthmaps(raw=True)
 
         # get pointmaps in camera frame
         rel_ptmaps = _fast_depthmap_to_pts3d(depth, self._grid, focals, pp=pp)
         # project to world frame
-        return geotrf(im_poses, rel_ptmaps)
+        if global_coord:
+            return geotrf(im_poses, rel_ptmaps)
+        else: 
+            return rel_ptmaps
 
-    def get_pts3d(self, raw=False):
-        res = self.depth_to_pts3d()
+    def get_pts3d(self, raw=False, global_coord=True):
+ 
+        res = self.depth_to_pts3d(global_coord=global_coord)
+ 
         if not raw:
-            res = [dm[:h*w].view(h, w, 3) for dm, (h, w) in zip(res, self.imshapes)]
+            res = [dm[:h * w].view(h, w, 3) for dm, (h, w) in zip(res, self.imshapes)]
         return res
 
     def forward(self):
@@ -194,50 +200,10 @@ class PointCloudOptimizer(BasePCOptimizer):
         aligned_pred_i = geotrf(pw_poses, pw_adapt * self._stacked_pred_i)
         aligned_pred_j = geotrf(pw_poses, pw_adapt * self._stacked_pred_j)
 
-        # compute the loss
+        # compute the less
         li = self.dist(proj_pts3d[self._ei], aligned_pred_i, weight=self._weight_i).sum() / self.total_area_i
         lj = self.dist(proj_pts3d[self._ej], aligned_pred_j, weight=self._weight_j).sum() / self.total_area_j
-
         return li + lj
-    
-
-class ScaleOptimizer(PointCloudOptimizer):
-    """ Optimize the global scene scale, given scale data from ground truth SMPL meshes."""
-
-    def __init__(self, scene: PointCloudOptimizer, init_scale: float, scale_data: torch.tensor, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        self.im_depthmaps = scene.im_depthmaps
-        self.im_poses = scene.im_poses
-        self.im_focals = scene.im_focals
-        self.im_pp = scene.im_pp
-
-        self.scale_data = scale_data
-        # scale parameter to optimize
-        self.scale = nn.Parameter(torch.tensor(np.log(init_scale), dtype=torch.float32))
-        self.scale.requires_grad_(True)
-
-        self.scale_loss = nn.L1Loss()
-
-
-    def get_depthmaps_scale(self, raw=False):
-        res = self.im_depthmaps.exp()
-        scale = self.scale.exp()
-        res = res * scale
-        if not raw:
-            res = [dm[:h*w].view(h, w) for dm, (h, w) in zip(res, self.imshapes)]
-        return res
-
-    def forward(self):
-        loss = super().forward()
-
-        depth_scale = self.get_depthmaps_scale(raw=True)
-        scale_loss = self.scale_loss(depth_scale[
-            self.scale_data[:, 0].long(),
-            self.scale_data[:, 1].long() * self.imshapes[0][1] + self.scale_data[:, 2].long()
-        ], self.scale_data[:, 3])
-
-        return loss + scale_loss
 
 
 def _fast_depthmap_to_pts3d(depth, pixel_grid, focal, pp):
@@ -278,7 +244,7 @@ def _ravel_hw(tensor, fill=0):
 
 def acceptable_focal_range(H, W, minf=0.5, maxf=3.5):
     focal_base = max(H, W) / (2 * np.tan(np.deg2rad(60) / 2))  # size / 1.1547005383792515
-    return minf*focal_base, maxf*focal_base
+    return minf * focal_base, maxf*focal_base
 
 
 def apply_mask(img, msk):

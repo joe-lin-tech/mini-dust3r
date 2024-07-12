@@ -8,8 +8,8 @@ import rerun.blueprint as rrb
 from pathlib import Path
 import uuid
 
-from mini_dust3r.api import OptimizedResult, inferece_dust3r, log_optimized_result
-from mini_dust3r.model import AsymmetricCroCo3DStereo
+from mini_dust3r_old.api import OptimizedResult, inferece_dust3r, log_optimized_result
+from mini_dust3r_old.model import AsymmetricCroCo3DStereo
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 model = AsymmetricCroCo3DStereo.from_pretrained(

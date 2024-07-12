@@ -12,21 +12,21 @@ import trimesh
 from glob import glob
 from tqdm import tqdm
 
-from mini_dust3r.utils.image import load_images, ImageDict
-from mini_dust3r.inference import inference, Dust3rResult
-from mini_dust3r.model import AsymmetricCroCo3DStereo
-from mini_dust3r.image_pairs import make_pairs
-from mini_dust3r.cloud_opt import global_aligner, GlobalAlignerMode
-from mini_dust3r.cloud_opt.base_opt import BasePCOptimizer
-from mini_dust3r.cloud_opt.optimizer_smpl import PointCloudOptimizerSMPL
-from mini_dust3r.cloud_opt.base_opt import global_alignment_loop
-from mini_dust3r.viz import pts3d_to_trimesh, cat_meshes
+from mini_dust3r_old.utils.image import load_images, ImageDict
+from mini_dust3r_old.inference import inference, Dust3rResult
+from mini_dust3r_old.model import AsymmetricCroCo3DStereo
+from mini_dust3r_old.image_pairs import make_pairs
+from mini_dust3r_old.cloud_opt import global_aligner, GlobalAlignerMode
+from mini_dust3r_old.cloud_opt.base_opt import BasePCOptimizer
+from mini_dust3r_old.cloud_opt.optimizer_smpl import PointCloudOptimizerSMPL
+from mini_dust3r_old.cloud_opt.base_opt import global_alignment_loop
+from mini_dust3r_old.viz import pts3d_to_trimesh, cat_meshes
 from dataclasses import dataclass
 from smplx import SMPL
 from smplx.lbs import vertices2joints
 from rerun.components import Material
-from mini_dust3r.utils.rot import axis_angle_to_matrix, interpolate_se3
-from mini_dust3r.utils.eval_utils import first_align_joints, global_align_joints, compute_jpe
+from mini_dust3r_old.utils.rot import axis_angle_to_matrix, interpolate_se3
+from mini_dust3r_old.utils.eval_utils import first_align_joints, global_align_joints, compute_jpe
 
 from typing import  TypedDict
 
@@ -48,10 +48,10 @@ EVAL_CHUNK_SIZE=100
 NUM_FRAMES = 1 + (MAX_NUM-1) * SAMPLE_INTERVAL
 PRED_SMPL_COLOR = (1.0, 0.0, 0.0, 1.0)
 GT_SMPL_COLOR = (0.0, 0.0, 1.0, 1.0)
-ROOT_PATH = "data/EMDB2/09_outdoor_walk"
-GT_PKL_PATH = glob(f'{ROOT_PATH}/*_data.pkl')[0]
-CONTACT_PKL_PATH = glob(f'{ROOT_PATH}/*contact.pkl')[0]
-IMG_IDX=[0] # placeholder
+# ROOT_PATH = "data/EMDB2/09_outdoor_walk"
+# GT_PKL_PATH = glob(f'{ROOT_PATH}/*_data.pkl')[0]
+# CONTACT_PKL_PATH = glob(f'{ROOT_PATH}/*contact.pkl')[0]
+# IMG_IDX=[0] # placeholder
 
 
 class OptimizedFrameResult(TypedDict):

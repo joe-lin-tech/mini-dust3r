@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from smplx import SMPL
 import cv2
-from mini_dust3r.utils.rot import axis_angle_to_matrix
+from mini_dust3r_old.utils.rot import axis_angle_to_matrix
 
 
 

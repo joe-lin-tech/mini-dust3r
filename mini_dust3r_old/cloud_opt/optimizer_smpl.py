@@ -8,10 +8,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from mini_dust3r.cloud_opt.base_opt import BasePCOptimizer
-from mini_dust3r.cloud_opt.optimizer import PointCloudOptimizer
-from mini_dust3r.utils.geometry import xy_grid, geotrf
-from mini_dust3r.utils.device import to_cpu, to_numpy
+from mini_dust3r_old.cloud_opt.base_opt import BasePCOptimizer
+from mini_dust3r_old.cloud_opt.optimizer import PointCloudOptimizer
+from mini_dust3r_old.utils.geometry import xy_grid, geotrf
+from mini_dust3r_old.utils.device import to_cpu, to_numpy
 
 
 class PointCloudOptimizerSMPL(BasePCOptimizer):
@@ -20,7 +20,7 @@ class PointCloudOptimizerSMPL(BasePCOptimizer):
     Graph edges: observations = (pred1, pred2)
     """
 
-    def __init__(self, old_scene:PointCloudOptimizer, smpl_scale_info, smpl_contact_info, init_scale, *args, 
+    def __init__(self, old_scene: PointCloudOptimizer, smpl_scale_info, init_scale, *args, 
                 optimize_pp=False, 
                 focal_break=20, 
                 min_conf_thr=3,
@@ -32,7 +32,7 @@ class PointCloudOptimizerSMPL(BasePCOptimizer):
         super(BasePCOptimizer, self).__init__(*args, **kwargs)
 
         self.smpl_scale_info = smpl_scale_info
-        self.smpl_contact_info = smpl_contact_info
+        # self.smpl_contact_info = smpl_contact_info
         self.smpl_dist = nn.L1Loss()
 
         # adding thing to optimize
@@ -251,12 +251,12 @@ class PointCloudOptimizerSMPL(BasePCOptimizer):
 
     
         smpl_scale_loss = self.smpl_dist(depth_scale[self.smpl_scale_info[:, 0].long(), 
-                                                     self.smpl_scale_info[:, 1].long()*self.imshape[1] + self.smpl_scale_info[:, 2].long()], 
+                                                     self.smpl_scale_info[:, 1].long() * self.imshape[1] + self.smpl_scale_info[:, 2].long()], 
                                                      self.smpl_scale_info[:, 3])
  
-        joint_global_1 = torch.einsum("bij,bj->bi", poses_scale[self.smpl_contact_info[:, 0].long()], self.smpl_contact_info[:, 1:5])
-        joint_global_2 = torch.einsum("bij,bj->bi", poses_scale[self.smpl_contact_info[:, 5].long()], self.smpl_contact_info[:, 6:])
-        smpl_contact_loss = self.smpl_dist(joint_global_1[:, :3], joint_global_2[:, :3])
+        # joint_global_1 = torch.einsum("bij,bj->bi", poses_scale[self.smpl_contact_info[:, 0].long()], self.smpl_contact_info[:, 1:5])
+        # joint_global_2 = torch.einsum("bij,bj->bi", poses_scale[self.smpl_contact_info[:, 5].long()], self.smpl_contact_info[:, 6:])
+        # smpl_contact_loss = self.smpl_dist(joint_global_1[:, :3], joint_global_2[:, :3])
 
         # rotate pairwise prediction according to pw_poses
         aligned_pred_i = geotrf(pw_poses, pw_adapt * self._stacked_pred_i)
@@ -266,7 +266,7 @@ class PointCloudOptimizerSMPL(BasePCOptimizer):
         li = self.dist(proj_pts3d[self._ei], aligned_pred_i, weight=self._weight_i).sum() / self.total_area_i
         lj = self.dist(proj_pts3d[self._ej], aligned_pred_j, weight=self._weight_j).sum() / self.total_area_j
 
-        return li + lj + smpl_scale_loss + smpl_contact_loss
+        return li + lj + smpl_scale_loss
 
         # N = len(self.edges)
         # batch_sz = 4
