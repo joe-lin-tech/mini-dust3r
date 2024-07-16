@@ -3,6 +3,7 @@ import rerun.blueprint as rrb
 from pathlib import Path
 from argparse import ArgumentParser
 import torch
+import matplotlib.pyplot as plt
 
 from mini_dust3r.api import OptimizedResult, inference_dust3r, log_optimized_result
 from mini_dust3r.model import AsymmetricCroCo3DStereo
@@ -61,10 +62,17 @@ def main(image_dir: Path):
         batch_size=1,
     )
 
+    if not optimized_results:
+        return
+
     blueprint = create_blueprint(image_dir, "world")
     rr.send_blueprint(blueprint)
 
-    log_optimized_result(optimized_results, Path("world"))
+    ground_map = log_optimized_result(optimized_results, Path("world"))
+    folder = str(image_dir).split('/')[-1]
+    os.makedirs(f"../pedmotion/ground/{folder}", exist_ok=True)
+    plt.imshow(ground_map)
+    plt.savefig(f"../pedmotion/ground/{folder}/{sorted(os.listdir(image_dir))[0]}")
 
 
 if __name__ == "__main__":
@@ -78,5 +86,10 @@ if __name__ == "__main__":
     rr.script_add_args(parser)
     args = parser.parse_args()
     rr.script_setup(args, "mini-dust3r")
-    main(args.image_dir)
+    # main(args.image_dir)
+    for dir in os.listdir(args.image_dir):
+        if os.path.exists(f"../pedmotion/ground/{dir}"):
+            continue
+        folder = Path(f"{args.image_dir}/{dir}")
+        main(folder)
     rr.script_teardown(args)

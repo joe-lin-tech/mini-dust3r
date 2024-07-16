@@ -33,6 +33,12 @@ class ImageDict(TypedDict):
     idx: int | list[int]
     instance: str | list[str]
 
+class MaskDict(TypedDict):
+    img: Float32[torch.Tensor, "b c h w"]
+    true_shape: tuple[int, int] | Int32[torch.Tensor, "b 2"]
+    idx: int | list[int]
+    instance: str | list[str]
+
 
 def imread_cv2(path, options=cv2.IMREAD_COLOR):
     """Open an image or a depthmap with opencv-python."""
@@ -74,13 +80,18 @@ def _resize_pil_image(img, long_edge_size):
     new_size = tuple(int(round(x * long_edge_size / S)) for x in img.size)
     return img.resize(new_size, interp)
 
+def _resize_mask(img, long_edge_size):
+    S = max(img.size)
+    interp = PIL.Image.NEAREST
+    new_size = tuple(int(round(x * long_edge_size / S)) for x in img.size)
+    return img.resize(new_size, interp)
 
 def load_images(
     folder_or_list: str | list,
     size: Literal[224, 512],
     square_ok: bool = False,
     verbose: bool = True,
-) -> list[ImageDict]:
+) -> tuple:
     """open and convert all images in a list or folder to proper input format for DUSt3R"""
     if isinstance(folder_or_list, str):
         if verbose:
@@ -101,7 +112,10 @@ def load_images(
     supported_images_extensions = tuple(supported_images_extensions)
 
     imgs = []
-    for path in folder_content:
+    masks = []
+    for i, path in enumerate(folder_content):
+        if i == 20: # TODO - hardcoded
+            break
         if not path.lower().endswith(supported_images_extensions):
             continue
         img = exif_transpose(PIL.Image.open(os.path.join(root, path))).convert("RGB")
@@ -135,7 +149,27 @@ def load_images(
             )
         )
 
-    assert imgs, "no images foud at " + root
+        mask = PIL.Image.open(os.path.join(root.replace("pedestrian_image_2s_full", "segformer"), path.replace("jpg", "png"))) # .convert('L')
+        mask = PIL.Image.fromarray(~(np.array(mask) == 11.)) # take pedestrian mask
+        mask = _resize_mask(mask, 512)
+
+        W, H = mask.size
+        cx, cy = W // 2, H // 2
+
+        halfw, halfh = ((2 * cx) // 16) * 8, ((2 * cy) // 16) * 8
+        if W == H:
+            halfh = 3 * halfw / 4
+        mask = mask.crop((cx - halfw, cy - halfh, cx + halfw, cy + halfh))
+        
+        masks.append(
+            dict(
+                img=tvf.ToTensor()(mask)[None],
+                true_shape=np.int32([mask.size[::-1]]),
+                idx=len(masks),
+                instance=str(len(masks)),
+            )
+        )
+
     if verbose:
         print(f" (Found {len(imgs)} images)")
-    return imgs
+    return imgs, masks

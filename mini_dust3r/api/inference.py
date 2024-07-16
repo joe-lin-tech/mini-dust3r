@@ -10,13 +10,15 @@ from jaxtyping import Float32, Bool
 import trimesh
 from tqdm import tqdm
 import os
+import matplotlib.pyplot as plt
+import point_cloud_utils as pcu
 
-from mini_dust3r.utils.image import load_images, ImageDict
+from mini_dust3r.utils.image import load_images, ImageDict, MaskDict
 from mini_dust3r.inference import inference, Dust3rResult
 from mini_dust3r.model import AsymmetricCroCo3DStereo
 from mini_dust3r.image_pairs import make_pairs
 from mini_dust3r.cloud_opt import global_aligner, GlobalAlignerMode
-from mini_dust3r.cloud_opt.base_opt import BasePCOptimizer
+from mini_dust3r.cloud_opt.base_opt import BasePCOptimizer, global_alignment_loop
 from mini_dust3r.cloud_opt.optimizer import ScaleOptimizer
 from mini_dust3r.viz import pts3d_to_trimesh, cat_meshes
 from mini_dust3r.utils.rot import axis_angle_to_matrix
@@ -36,6 +38,7 @@ class OptimizedResult:
     point_cloud: trimesh.PointCloud
     mesh: trimesh.Trimesh
     gt_smpl_mesh: trimesh.Trimesh
+    transl: Float32[np.ndarray, "b 3"]
 
 
 def log_optimized_result(
@@ -96,10 +99,10 @@ def log_optimized_result(
             f"{camera_log_path}/pinhole/rgb",
             rr.Image(rgb_hw3),
         )
-        rr.log(
-            f"{camera_log_path}/pinhole/depth",
-            rr.DepthImage(depth_hw),
-        )
+        # rr.log(
+        #     f"{camera_log_path}/pinhole/depth",
+        #     rr.DepthImage(depth_hw),
+        # )
 
         # display smpl meshes
         rr.log(
@@ -111,6 +114,57 @@ def log_optimized_result(
                 mesh_material=Material(albedo_factor=(0.0, 0.0, 1.0, 1.0)),
             ),
         )
+    
+    # v = np.array(optimized_result.point_cloud.vertices)
+    # n_idx, n = pcu.estimate_point_cloud_normals_knn(v, 32)
+    # mask = (np.argmax(np.abs(n), axis=-1) == 1) & (n[:, 1] > 0)
+    # v = v[mask]
+    # n = n[mask]
+    # n = n / np.linalg.norm(n, axis=-1, keepdims=True)
+
+    vertices = np.array(optimized_result.mesh.vertices)
+    normals = np.array(optimized_result.mesh.vertex_normals)
+    normals = normals / np.linalg.norm(normals, axis=-1, keepdims=True)
+    mask = (np.argmax(np.abs(normals), axis=-1) == 1) & (normals[:, 1] > 0)
+    vertices = vertices[mask]
+    normals = normals[mask]
+
+    # arrow_log_path = f"{parent_log_path}/arrow_{i}"
+    # rr.log(
+    #     f"{arrow_log_path}",
+    #     rr.Arrows3D(
+    #         origins=vertices,
+    #         vectors=normals
+    #     )
+    # )
+
+    points = vertices
+
+    grid_size = [-4, 4, -4, 4]
+    grid_points = [40, 40]
+    ground_map = np.zeros((grid_points[0], grid_points[1]))
+
+    size_x = (grid_size[1] - grid_size[0]) / grid_points[0]
+    size_z = (grid_size[3] - grid_size[2]) / grid_points[1]
+    size = np.array([size_x, size_z])
+    lower = np.array([grid_size[0], grid_size[2]])
+
+    points -= optimized_result.transl[0]
+    points = points[(grid_size[0] <= points[:, 0]) & (points[:, 0] <= grid_size[1])
+                    & (grid_size[2] <= points[:, 2]) & (points[:, 2] <= grid_size[3])]
+    indices = (points[:, [0, 2]] - lower) // size
+    indices = indices.astype(np.int32)
+    ground_map[indices[:, 0], indices[:, 1]] = points[:, 1]
+
+    return ground_map
+    
+
+def find_closest_point(mask, x, y):
+    points = np.argwhere(mask == 1)
+    dist = np.sqrt((points[:, 0] - x) ** 2 + (points[:, 1] - y) ** 2)
+    min_index = np.argmin(dist)
+    closest_point = points[min_index]
+    return [closest_point[1], closest_point[0]]
 
 
 def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
@@ -152,35 +206,31 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
     with open(smpl_path, "rb") as f:
         all_smpl = pickle.load(f)
 
-    gt_smpl = [motion for motion in all_smpl if motion['image'].split('/')[0] == image_dir.split('/')[2]][0]
+    smpl_motion = [motion for motion in all_smpl if motion['image'].split('/')[0] == image_dir.split('/')[-1]][0]
     smpl = SMPLLayer(model_path=smpl_model_path)
     tt = lambda x: torch.Tensor(x).float()
 
-    global_orient = axis_angle_to_matrix(tt(gt_smpl['global_orient']))
-    betas = gt_smpl['betas']
-    transl = gt_smpl['global_trans']
-    body_pose = gt_smpl['body_pose']
-    frame_id = int(sorted(os.listdir(image_dir))[0][:-4]) - 1
+    global_orient = smpl_motion['global_orient']
+    local_orient = smpl_motion['local_orient']
+    betas = smpl_motion['betas']
+    transl = smpl_motion['global_trans']
+    local_transl = smpl_motion['local_trans']
+    body_pose = smpl_motion['body_pose']
 
-    import ipdb; ipdb.set_trace()
+    global_orient_source = axis_angle_to_matrix(tt(global_orient))
+    global_orient_target = axis_angle_to_matrix(tt(local_orient))
+    source_to_target_rotation = global_orient_target @ global_orient_source.transpose(1, 2)
 
-    global_orient_source = axis_angle_to_matrix(
-        tt(gt_smpl['global_orient'][frame_id]))
-    global_orient_target = axis_angle_to_matrix(
-        tt(gt_smpl['local_orient'][frame_id]))
-    source_to_target_rotation = global_orient_target @ global_orient_source.T
+    global_orient = axis_angle_to_matrix(tt(global_orient))
+    global_orient = torch.einsum('bij,bjk->bik', source_to_target_rotation, global_orient)
 
-    global_orient = axis_angle_to_matrix(
-        tt(gt_smpl['global_orient']))
-    global_orient = source_to_target_rotation @ global_orient
-
-    transl_source = tt(gt_smpl['global_trans'][[frame_id]])
-    transl_target = tt(gt_smpl['local_trans'][[frame_id]])
-    source_to_target_translation = transl_target.T - source_to_target_rotation @ transl_source.T
+    transl_source = tt(transl).unsqueeze(-1)
+    transl_target = tt(local_transl).unsqueeze(-1)
+    source_to_target_translation = transl_target - torch.einsum('bij,bjk->bik', source_to_target_rotation, transl_source)
     
-    transl = tt(gt_smpl['global_trans'])
-    transl = source_to_target_rotation @ transl.T + source_to_target_translation
-    transl = transl.T
+    transl = tt(transl).unsqueeze(-1)
+    transl = torch.einsum('bij,bjk->bik', source_to_target_rotation, transl) + source_to_target_translation
+    transl = transl.squeeze(-1)
 
     # use mean shape as body shape
     mean_beta = betas.mean(axis=0, keepdims=True)
@@ -192,41 +242,122 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
                      transl=tt(transl),
                      pose2rot=False,
                      default_smpl=True)
+    
+    # gt_smpl_mesh = [trimesh.Trimesh(vertices=gt_smpl.vertices[int(frame_path[:-4]) - 1, :, :3],
+    #                                 faces=smpl.faces) for frame_path in os.listdir(image_dir)]
 
-    gt_smpl_mesh = [trimesh.Trimesh(vertices=gt_smpl.vertices[i, :, :3],
-                                    faces=smpl.faces) for i in range(gt_smpl.vertices.shape[0])]
+    joints = vertices2joints(smpl.J_regressor, gt_smpl.vertices).cpu().numpy()
 
+    camera_mat = K_b33[0]
 
-    ### TEMPORARY SCALING
+    joints_2d = np.einsum("ij,nj->ni", camera_mat, joints[0])
+    joints_2d = joints_2d / joints_2d[:, [2]]
+    joints_2d = joints_2d[:, :2]
+    joints_img = np.zeros_like(rgb_hw3_list[0])
+    joints_img[joints_2d[:, 1].astype(np.int32), joints_2d[:, 0].astype(np.int32)] = 1
+    plt.imshow(joints_img)
+    plt.savefig("debug/joints_img.png")
+
+    J_regressor_feet = torch.from_numpy(np.load(f"{smpl_model_path}/J_regressor_feet.npy")).float()
+    feet_joints_all = vertices2joints(J_regressor_feet, gt_smpl.vertices)
+
+    # determine initial scale factor
+    smpl_scale_info = []
+    all_scales = []
+    w, h = rgb_hw3_list[0].shape[1], rgb_hw3_list[0].shape[0]
+
+    for f, frame_path in enumerate(sorted(os.listdir(image_dir))):
+        if f == 20: # TODO - hardcoded
+            break
+        i = int(frame_path[:-4]) - 1
+        if i >= len(feet_joints_all):
+            continue
+        feet_joints = feet_joints_all[i].cpu().numpy()
+        feet_joints_2d = np.einsum("ij,nj->ni", camera_mat, feet_joints)
+        feet_joints_2d = feet_joints_2d / feet_joints_2d[:, [2]]
+        feet_joints_2d = feet_joints_2d[:, :2]
+
+        masks_img = masks_list[f].astype(np.int32)
+        for r in range(-5, 6):
+            for c in range(-5, 6):
+                masks_img[feet_joints_2d[[0, 2], 1].astype(np.int32) + r, feet_joints_2d[[0, 2], 0].astype(np.int32) + c] = 2
+        all_joints_2d = np.einsum("ij,nj->ni", camera_mat, joints[i])
+        all_joints_2d = all_joints_2d / all_joints_2d[:, [2]]
+        all_joints_2d = all_joints_2d[:, :2]
+        masks_img[all_joints_2d[:, 1].astype(np.int32), all_joints_2d[:, 0].astype(np.int32)] = 3
+        plt.imshow(masks_img)
+        plt.savefig("debug/mask_img.png")
+
+        for joint_idx in [0, 2]:
+            gt_feet_2d = feet_joints_2d[joint_idx]
+            if 0 <= gt_feet_2d[0] < w and 0 <= gt_feet_2d[1] < h:
+                gt_feet_3d = feet_joints[joint_idx]
+                # valid_feet_2d = find_closest_point(masks_list[f], gt_feet_2d[1], gt_feet_2d[0])
+                valid_feet_2d = gt_feet_2d.astype(np.int32)
+                valid_img = masks_list[f].astype(np.int32)
+                for r in range(-5, 6):
+                    for c in range(-5, 6):
+                        valid_img[int(valid_feet_2d[1]) + r, int(valid_feet_2d[0]) + c] = 2
+                valid_img[all_joints_2d[:, 1].astype(np.int32), all_joints_2d[:, 0].astype(np.int32)] = 3
+                plt.imshow(valid_img)
+                plt.savefig("debug/valid_img.png")
+
+                depth_img = depth_hw_list[f]
+                plt.imshow(depth_img)
+                plt.savefig("debug/depth_img.png")
+
+                valid_feet_depth = depth_hw_list[f][valid_feet_2d[1], valid_feet_2d[0]]
+                scale_factor = gt_feet_3d[2] / valid_feet_depth
+                smpl_scale_info.append(torch.tensor([f, valid_feet_2d[1], valid_feet_2d[0], gt_feet_3d[2]]).cuda())
+                all_scales.append(scale_factor)
+
+    assert len(all_scales) > 0
+    all_scales = np.array(all_scales)
+    scale_factor = np.median(all_scales)
 
     # optimize scale factor with smpl info
-    # print(f"scale before optimization: {scale_factor}")
-    # new_scene = ScaleOptimizer(scene, torch.stack(smpl_scale_info), scale_factor)
-    # with torch.autograd.set_detect_anomaly(True):
-    #     global_alignment_loop(new_scene,
-    #             niter=NITER,
-    #             schedule=SCHEDULE,
-    #             lr=LR)
-    # scale_factor = new_scene.global_scale.exp().item()
-    # print(f"scale after optimization: {scale_factor}")
+    print(f"scale before optimization: {scale_factor}")
+    scaled_scene = ScaleOptimizer(scene, torch.stack(smpl_scale_info), scale_factor)
+    from mini_dust3r.cloud_opt.optimizer_smpl import PointCloudOptimizerSMPL
+    scaled_scene = PointCloudOptimizerSMPL(scene, torch.stack(smpl_scale_info), scale_factor)
+    with torch.autograd.set_detect_anomaly(True):
+        global_alignment_loop(scaled_scene, niter=150, schedule="linear", lr=0.01)
+    # scale_factor = scaled_scene.scale.exp().item()
+    scale_factor = scaled_scene.global_scale.exp().item()
+    print(f"scale after optimization: {scale_factor}")
 
-    # scale_factor = 10
-    # normalize_transform = np.linalg.inv(world_T_cam_b44[0])
+    normalize_transform = np.linalg.inv(world_T_cam_b44[0])
 
-    # world_T_cam_b44 = np.einsum('ij,bjk->bik', normalize_transform,
-    #                             world_T_cam_b44)
-    # world_T_cam_b44[:, :3, 3] = world_T_cam_b44[:, :3, 3] * scale_factor
-    # for i, pts3d in enumerate(pts3d_list):
-    #     pts3d = pts3d * scale_factor
-    #     pts3d = np.concatenate(
-    #         [pts3d, np.ones([pts3d.shape[0], pts3d.shape[1], 1])], axis=-1)
-    #     pts3d = np.einsum('ij,hwj->hwi', world_T_cam_b44[i], pts3d)
-    #     pts3d_list[i] = pts3d[..., :3]
+    world_T_cam_b44 = np.einsum('ij,bjk->bik', normalize_transform,
+                                world_T_cam_b44)
+    world_T_cam_b44[:, :3, 3] = world_T_cam_b44[:, :3, 3] * scale_factor
 
-    # for i, depth in enumerate(depth_hw_list):
-    #     depth = depth * scale_factor
-    #     depth_hw_list[i] = depth
-    ### TEMPORARY SCALING
+    pts3d_list = [pts3d * scale_factor for pts3d in pts3d_list]
+    depth_hw_list = [depth * scale_factor for depth in depth_hw_list]
+
+    global_orient = smpl_motion['local_orient']
+    betas = smpl_motion['betas']
+    transl = smpl_motion['local_trans']
+    body_pose = smpl_motion['body_pose']
+
+    gt_smpl = smpl(body_pose=axis_angle_to_matrix(tt(body_pose)),
+                    global_orient=axis_angle_to_matrix(tt(global_orient)),
+                    betas=tt(betas),
+                    transl=tt(transl),
+                    pose2rot=False,
+                    default_smpl=True)
+
+    gt_smpl_mesh = []
+    for f, frame_path in enumerate(sorted(os.listdir(image_dir))):
+        if f == 20: # TODO - hardcoded
+            break
+        # camera_transform = tt(world_T_cam_b44[f])
+        gt_vertices = gt_smpl.vertices[f]
+        # gt_vertices = torch.concatenate([
+        #     gt_vertices, torch.ones(gt_vertices.shape[0], 1)], dim=-1)
+        # gt_vertices = torch.einsum('ij,nj->ni', camera_transform, gt_vertices)
+        gt_smpl_mesh.append(trimesh.Trimesh(vertices=gt_vertices[:, :3], 
+                                            faces=smpl.faces))
 
     point_cloud: Float32[np.ndarray, "num_points 3"] = np.concatenate(
         [p[m] for p, m in zip(pts3d_list, masks_list)]
@@ -254,7 +385,8 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
         masks_list=masks_list,
         point_cloud=point_cloud,
         mesh=mesh,
-        gt_smpl_mesh=gt_smpl_mesh
+        gt_smpl_mesh=gt_smpl_mesh,
+        transl=transl
     )
     return optimised_result
 
@@ -289,11 +421,11 @@ def inference_dust3r(
         ValueError: If `image_dir_or_list` is neither a list of paths nor a path.
     """
     if isinstance(image_dir_or_list, list):
-        imgs: list[ImageDict] = load_images(
+        imgs, masks = load_images(
             folder_or_list=image_dir_or_list, size=image_size, verbose=True
         )
     elif isinstance(image_dir_or_list, Path):
-        imgs: list[ImageDict] = load_images(
+        imgs, masks = load_images(
             folder_or_list=str(image_dir_or_list), size=image_size, verbose=True
         )
     else:
@@ -305,17 +437,29 @@ def inference_dust3r(
         imgs[1]["idx"] = 1
 
     pairs: list[tuple[ImageDict, ImageDict]] = make_pairs(
-        imgs, scene_graph="complete", prefilter=None, symmetrize=True
+        imgs, scene_graph="complete", prefilter=None, symmetrize=True # scene_graph: complete or window-10
     )
+    mask_pairs: list[tuple[ImageDict,
+                           ImageDict]] = make_pairs(masks,
+                                                    scene_graph="complete",
+                                                    prefilter=None,
+                                                    symmetrize=True)
     output: Dust3rResult = inference(pairs, model, device, batch_size=batch_size)
 
-    mode = (
-        GlobalAlignerMode.PointCloudOptimizer
-        if len(imgs) > 2
-        else GlobalAlignerMode.PairViewer
-    )
+    for i, (mask1, mask2) in enumerate(mask_pairs):
+        output["pred1"]["conf"][i][mask1["img"][0][0] == 0] = 1.0
+        output["pred2"]["conf"][i][mask2["img"][0][0] == 0] = 1.0
+
+    # mode = (
+    #     GlobalAlignerMode.PointCloudOptimizer
+    #     if len(imgs) > 2
+    #     else GlobalAlignerMode.PairViewer
+    # )
+    if len(imgs) <= 2:
+        return
+    mode = GlobalAlignerMode.PointCloudOptimizer
     scene: BasePCOptimizer = global_aligner(
-        dust3r_output=output, device=device, mode=mode
+        dust3r_output=output, device=device, mode=mode, optimize_pp=True
     )
 
     lr = 0.01
@@ -325,6 +469,27 @@ def inference_dust3r(
             init="mst", niter=niter, schedule=schedule, lr=lr
         )
 
+    # use camera parameter assumptions
+    img_w = 1280
+    img_h = 720
+    f = (img_h ** 2 + img_w ** 2) ** 0.5
+    cx = 0.5 * img_w
+    cy = 0.5 * img_h
+
+    cx = cx * output["view1"]['true_shape'][0][1] / img_w
+    cy = cy * output["view1"]['true_shape'][0][0] / img_h
+    f = f * output["view1"]['true_shape'][0][0] / img_h
+
+    assert np.allclose(output["view1"]['true_shape'][0][1] / img_w,
+                       output["view1"]['true_shape'][0][0] / img_h)
+
+    # preset camera intrinsics
+    scene.preset_focal(np.array([f]).repeat(len(imgs), axis=0))
+    scene.preset_principal_point(
+        np.array([[cx, cy]]).repeat(len(imgs), axis=0))
+
     # get the optimized result from the scene
-    optimized_result: OptimizedResult = scene_to_results(scene, min_conf_thr)
+    optimized_result: OptimizedResult = scene_to_results(scene, min_conf_thr, image_dir=str(image_dir_or_list))
+    optimized_result.point_cloud.export("debug/pointcloud.ply")
+
     return optimized_result

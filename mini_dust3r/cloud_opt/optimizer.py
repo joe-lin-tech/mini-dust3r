@@ -205,16 +205,18 @@ class ScaleOptimizer(PointCloudOptimizer):
     """ Optimize the global scene scale, given scale data from ground truth SMPL meshes."""
 
     def __init__(self, scene: PointCloudOptimizer, init_scale: float, scale_data: torch.tensor, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super(BasePCOptimizer, self).__init__(*args, **kwargs)
 
         self.im_depthmaps = scene.im_depthmaps
         self.im_poses = scene.im_poses
         self.im_focals = scene.im_focals
         self.im_pp = scene.im_pp
 
+        self.verbose = scene.verbose
+
         self.scale_data = scale_data
         # scale parameter to optimize
-        self.scale = nn.Parameter(torch.tensor(np.log(init_scale), dtype=torch.float32))
+        self.scale = nn.Parameter(torch.log(init_scale))
         self.scale.requires_grad_(True)
 
         self.scale_loss = nn.L1Loss()
