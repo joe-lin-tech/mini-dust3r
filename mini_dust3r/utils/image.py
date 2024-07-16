@@ -151,6 +151,7 @@ def load_images(
 
         mask = PIL.Image.open(os.path.join(root.replace("pedestrian_image_2s_full", "segformer"), path.replace("jpg", "png"))) # .convert('L')
         mask = PIL.Image.fromarray(~(np.array(mask) == 11.)) # take pedestrian mask
+        # mask = PIL.Image.open(os.path.join(root.replace("images", "masks"), path.replace("jpg", "png"))).convert('L')
         mask = _resize_mask(mask, 512)
 
         W, H = mask.size

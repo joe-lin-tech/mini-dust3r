@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from mini_dust3r.api import OptimizedResult, inference_dust3r, log_optimized_result
 from mini_dust3r.model import AsymmetricCroCo3DStereo
 import os
+import numpy as np
 
 def create_blueprint(image_name_list: list[str], log_path: Path) -> rrb.Blueprint:
     # dont show 2d views if there are more than 4 images as to not clutter the view
@@ -63,7 +64,7 @@ def main(image_dir: Path):
     )
 
     if not optimized_results:
-        return
+        return False
 
     blueprint = create_blueprint(image_dir, "world")
     rr.send_blueprint(blueprint)
@@ -71,9 +72,11 @@ def main(image_dir: Path):
     ground_map = log_optimized_result(optimized_results, Path("world"))
     folder = str(image_dir).split('/')[-1]
     os.makedirs(f"../pedmotion/ground/{folder}", exist_ok=True)
+    np.save(f"../pedmotion/ground/{folder}/{sorted(os.listdir(image_dir))[0]}".replace("jpg", "npy"), ground_map)
     plt.imshow(ground_map)
     plt.savefig(f"../pedmotion/ground/{folder}/{sorted(os.listdir(image_dir))[0]}")
 
+    return True
 
 if __name__ == "__main__":
     parser = ArgumentParser("mini-dust3r rerun demo script")
@@ -88,8 +91,11 @@ if __name__ == "__main__":
     rr.script_setup(args, "mini-dust3r")
     # main(args.image_dir)
     for dir in os.listdir(args.image_dir):
-        if os.path.exists(f"../pedmotion/ground/{dir}"):
-            continue
+        dir = "jPx8Wgn9dOc_21"
+        # if os.path.exists(f"../pedmotion/ground/{dir}"):
+        #     continue
         folder = Path(f"{args.image_dir}/{dir}")
-        main(folder)
+        # main(folder)
+        if main(folder):
+            break
     rr.script_teardown(args)

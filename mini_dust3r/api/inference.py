@@ -166,6 +166,10 @@ def find_closest_point(mask, x, y):
     closest_point = points[min_index]
     return [closest_point[1], closest_point[0]]
 
+def get_valid_indices(indices, shape):
+    indices[:, 0] = np.clip(indices[:, 0], 0, shape[1] - 1)
+    indices[:, 1] = np.clip(indices[:, 1], 0, shape[0] - 1)
+    return indices
 
 def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
                      smpl_path: str = "data/citywalkers/full_all_with_measurements.pkl",
@@ -253,6 +257,8 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
     joints_2d = np.einsum("ij,nj->ni", camera_mat, joints[0])
     joints_2d = joints_2d / joints_2d[:, [2]]
     joints_2d = joints_2d[:, :2]
+    joints_2d = get_valid_indices(joints_2d, rgb_hw3_list[0].shape)
+
     joints_img = np.zeros_like(rgb_hw3_list[0])
     joints_img[joints_2d[:, 1].astype(np.int32), joints_2d[:, 0].astype(np.int32)] = 1
     plt.imshow(joints_img)
@@ -276,14 +282,21 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
         feet_joints_2d = np.einsum("ij,nj->ni", camera_mat, feet_joints)
         feet_joints_2d = feet_joints_2d / feet_joints_2d[:, [2]]
         feet_joints_2d = feet_joints_2d[:, :2]
+        feet_joints_2d = get_valid_indices(feet_joints_2d, masks_list[f].shape)
 
         masks_img = masks_list[f].astype(np.int32)
         for r in range(-5, 6):
             for c in range(-5, 6):
-                masks_img[feet_joints_2d[[0, 2], 1].astype(np.int32) + r, feet_joints_2d[[0, 2], 0].astype(np.int32) + c] = 2
+                idx_y = feet_joints_2d[[0, 2], 1].astype(np.int32) + r
+                idx_x = feet_joints_2d[[0, 2], 0].astype(np.int32) + c
+                if (0 <= idx_y).all() and (idx_y < masks_img.shape[0]).all() \
+                    and (0 <= idx_x).all() and (idx_x < masks_img.shape[1]).all():
+                    masks_img[idx_y, idx_x] = 2
         all_joints_2d = np.einsum("ij,nj->ni", camera_mat, joints[i])
         all_joints_2d = all_joints_2d / all_joints_2d[:, [2]]
         all_joints_2d = all_joints_2d[:, :2]
+        all_joints_2d = get_valid_indices(all_joints_2d, masks_img.shape)
+
         masks_img[all_joints_2d[:, 1].astype(np.int32), all_joints_2d[:, 0].astype(np.int32)] = 3
         plt.imshow(masks_img)
         plt.savefig("debug/mask_img.png")
@@ -297,7 +310,10 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
                 valid_img = masks_list[f].astype(np.int32)
                 for r in range(-5, 6):
                     for c in range(-5, 6):
-                        valid_img[int(valid_feet_2d[1]) + r, int(valid_feet_2d[0]) + c] = 2
+                        idx_y = int(valid_feet_2d[1]) + r
+                        idx_x = int(valid_feet_2d[0]) + c
+                        if 0 <= idx_y < valid_img.shape[0] and 0 <= idx_x < valid_img.shape[1]:
+                            valid_img[idx_y, idx_x] = 2
                 valid_img[all_joints_2d[:, 1].astype(np.int32), all_joints_2d[:, 0].astype(np.int32)] = 3
                 plt.imshow(valid_img)
                 plt.savefig("debug/valid_img.png")
