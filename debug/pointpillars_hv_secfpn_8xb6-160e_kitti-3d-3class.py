@@ -87,28 +87,52 @@ model = dict(
             ranges=[
                 [
                     0,
-                    -39.68,
+                    -19.84,
                     -0.6,
-                    69.12,
-                    39.68,
+                    17.28,
+                    19.84,
                     -0.6,
                 ],
+                # [
+                #     0,
+                #     -39.68,
+                #     -0.6,
+                #     69.12,
+                #     39.68,
+                #     -0.6,
+                # ],
                 [
                     0,
-                    -39.68,
+                    -19.84,
                     -0.6,
-                    69.12,
-                    39.68,
+                    17.28,
+                    19.84,
                     -0.6,
                 ],
+                # [
+                #     0,
+                #     -39.68,
+                #     -0.6,
+                #     69.12,
+                #     39.68,
+                #     -0.6,
+                # ],
                 [
                     0,
-                    -39.68,
+                    -19.84,
                     -1.78,
-                    69.12,
-                    39.68,
+                    17.28,
+                    19.84,
                     -1.78,
                 ],
+                # [
+                #     0,
+                #     -39.68,
+                #     -1.78,
+                #     69.12,
+                #     39.68,
+                #     -1.78,
+                # ],
             ],
             reshape_out=False,
             rotations=[
@@ -164,15 +188,15 @@ model = dict(
             ),
             point_cloud_range=[
                 0,
-                -39.68,
+                -19.84, # -39.68,
                 -3,
-                69.12,
-                39.68,
+                17.28, # 69.12,
+                19.84, # 39.68,
                 1,
             ],
             voxel_size=[
-                0.16,
-                0.16,
+                0.04, # 0.16,
+                0.08, # 0.16,
                 4,
             ])),
     middle_encoder=dict(
@@ -240,16 +264,16 @@ model = dict(
         in_channels=4,
         point_cloud_range=[
             0,
-            -39.68,
+            -19.84, # -39.68,
             -3,
-            69.12,
-            39.68,
+            17.28, # 69.12,
+            19.84, # 39.68,
             1,
         ],
         type='PillarFeatureNet',
         voxel_size=[
-            0.16,
-            0.16,
+            0.04, # 0.16,
+            0.08, # 0.16,
             4,
         ],
         with_distance=False))
@@ -294,14 +318,14 @@ param_scheduler = [
         eta_min=1,
         type='CosineAnnealingMomentum'),
 ]
-point_cloud_range = [
+point_cloud_range=[
     0,
-    -39.68,
+    -19.84, # -39.68,
     -3,
-    69.12,
-    39.68,
+    17.28, # 69.12,
+    19.84, # 39.68,
     1,
-]
+],
 resume = False
 test_cfg = dict()
 test_dataloader = dict(
@@ -352,10 +376,10 @@ test_dataloader = dict(
                     dict(
                         point_cloud_range=[
                             0,
-                            -39.68,
+                            -19.84, # -39.68,
                             -3,
-                            69.12,
-                            39.68,
+                            17.28, # 69.12,
+                            19.84, # 39.68,
                             1,
                         ],
                         type='PointsRangeFilter'),
@@ -410,10 +434,10 @@ test_pipeline = [
             dict(
                 point_cloud_range=[
                     0,
-                    -39.68,
+                    -19.84, # -39.68,
                     -3,
-                    69.12,
-                    39.68,
+                    17.28, # 69.12,
+                    19.84, # 39.68,
                     1,
                 ],
                 type='PointsRangeFilter'),
@@ -490,20 +514,20 @@ train_dataloader = dict(
                 dict(
                     point_cloud_range=[
                         0,
-                        -39.68,
+                        -19.84, # -39.68,
                         -3,
-                        69.12,
-                        39.68,
+                        17.28, # 69.12,
+                        19.84, # 39.68,
                         1,
                     ],
                     type='PointsRangeFilter'),
                 dict(
                     point_cloud_range=[
                         0,
-                        -39.68,
+                        -19.84, # -39.68,
                         -3,
-                        69.12,
-                        39.68,
+                        17.28, # 69.12,
+                        19.84, # 39.68,
                         1,
                     ],
                     type='ObjectRangeFilter'),
@@ -570,20 +594,20 @@ train_pipeline = [
     dict(
         point_cloud_range=[
             0,
-            -39.68,
+            -19.84, # -39.68,
             -3,
-            69.12,
-            39.68,
+            17.28, # 69.12,
+            19.84, # 39.68,
             1,
         ],
         type='PointsRangeFilter'),
     dict(
         point_cloud_range=[
             0,
-            -39.68,
+            -19.84, # -39.68,
             -3,
-            69.12,
-            39.68,
+            17.28, # 69.12,
+            19.84, # 39.68,
             1,
         ],
         type='ObjectRangeFilter'),
@@ -645,10 +669,10 @@ val_dataloader = dict(
                     dict(
                         point_cloud_range=[
                             0,
-                            -39.68,
+                            -19.84, # -39.68,
                             -3,
-                            69.12,
-                            39.68,
+                            17.28, # 69.12,
+                            19.84, # 39.68,
                             1,
                         ],
                         type='PointsRangeFilter'),
@@ -678,8 +702,8 @@ visualizer = dict(
     vis_backends=[
         dict(type='LocalVisBackend'),
     ])
-voxel_size = [
-    0.16,
-    0.16,
+voxel_size=[
+    0.04, # 0.16,
+    0.08, # 0.16,
     4,
-]
+],

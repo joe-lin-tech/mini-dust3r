@@ -1,5 +1,6 @@
 import rerun as rr
 from rerun.components import Material
+from rerun.datatypes import Rotation3D
 from pathlib import Path
 from typing import Literal, List
 import copy
@@ -58,23 +59,23 @@ def log_optimized_result(
         # timeless=True,
     )
 
-    mesh = optimized_result.mesh
-    rr.log(
-        f"{parent_log_path}/mesh",
-        rr.Mesh3D(
-            vertex_positions=mesh.vertices,
-            vertex_colors=mesh.visual.vertex_colors,
-            triangle_indices=mesh.faces,
-        ),
-        # timeless=True,
-    )
+    # mesh = optimized_result.mesh
+    # rr.log(
+    #     f"{parent_log_path}/mesh",
+    #     rr.Mesh3D(
+    #         vertex_positions=mesh.vertices,
+    #         vertex_colors=mesh.visual.vertex_colors,
+    #         triangle_indices=mesh.faces,
+    #     ),
+    #     # timeless=True,
+    # )
+
     pbar = tqdm(
         zip(
             optimized_result.rgb_hw3_list,
             optimized_result.depth_hw_list,
             optimized_result.K_b33,
-            optimized_result.world_T_cam_b44,
-            # optimized_result.gt_smpl_mesh
+            optimized_result.world_T_cam_b44
         ),
         total=len(optimized_result.rgb_hw3_list),
     )
@@ -121,25 +122,52 @@ def log_optimized_result(
             timeless=True
         )
 
-    with open("debug/preds/pointcloud.json", "rb") as f:
-        boxes = json.load(f)["bboxes_3d"][0]
-    import ipdb; ipdb.set_trace()
     rr.log(
         f"{parent_log_path}/boxes",
-        rr.Boxes3D(
-            sizes=[boxes[3], boxes[5], boxes[4]], # boxes[3:6],
-            centers=[boxes[0], boxes[2], boxes[1]], # boxes[:3],
-            rotations=rr.RotationAxisAngle(axis=[0, 1, 0],
-                                           angle=rr.datatypes.Angle(rad=boxes[6]))
-        )
+        rr.Transform3D(
+            translation=optimized_result.world_T_cam_b44[0, :3, 3],
+            mat3x3=optimized_result.world_T_cam_b44[0, :3, :3],
+            from_parent=False,
+        ),
     )
-    
-    # v = np.array(optimized_result.point_cloud.vertices)
-    # n_idx, n = pcu.estimate_point_cloud_normals_knn(v, 32)
-    # mask = (np.argmax(np.abs(n), axis=-1) == 1) & (n[:, 1] > 0)
-    # v = v[mask]
-    # n = n[mask]
-    # n = n / np.linalg.norm(n, axis=-1, keepdims=True)
+    boxes_dict = np.load("debug/boxes.npy", allow_pickle=True)
+    boxes_dict = boxes_dict.item()
+    boxes = boxes_dict["boxes"]
+    classes = boxes_dict["phrases"]
+    depth_by_class = { # different depths at different angles
+        "car": 2,
+        "person": 0.35,
+        "fence": 0.1,
+        "tree": 0.3,
+        "bicycle": 0.1,
+        "sign": 0.05,
+        "trashcan": 0.25,
+        "post": 0.02
+    }
+
+    for i, box in enumerate(boxes):
+        cx = int((box[0] + box[2]) / 2)
+        cy = int((box[1] + box[3]) / 2)
+        box = np.vstack([box.reshape(2, 2).T, np.ones((1, 2))])
+        depth = boxes_dict["depth"] if classes[i] == "person" else optimized_result.depth_hw_list[0] # generalize to moving objects
+        box *= depth[cy, cx]
+        box = np.linalg.inv(optimized_result.K_b33[0]) @ box
+
+        obj_w = np.abs(box[0, 1] - box[0, 0])
+        obj_h = np.abs(box[1, 1] - box[1, 0])
+        obj_d = depth_by_class[classes[i]]
+        obj_cx = min(box[0]) + obj_w / 2
+        obj_cy = min(box[1]) + obj_h / 2
+        obj_cz = min(box[2]) + obj_d / 2
+
+        rr.log(
+            f"{parent_log_path}/boxes/box_{i}",
+            rr.Boxes3D(
+                sizes=[obj_w, obj_h, obj_d],
+                centers=[obj_cx, obj_cy, obj_cz],
+                labels=classes[i]
+            )
+        )
 
     vertices = np.array(optimized_result.initial_mesh.vertices)
     normals = np.array(optimized_result.initial_mesh.vertex_normals)
@@ -276,10 +304,10 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
     joints_2d = joints_2d[:, :2]
     joints_2d = get_valid_indices(joints_2d, rgb_hw3_list[0].shape)
 
-    joints_img = np.zeros_like(rgb_hw3_list[0])
-    joints_img[joints_2d[:, 1].astype(np.int32), joints_2d[:, 0].astype(np.int32)] = 1
-    plt.imshow(joints_img)
-    plt.savefig("debug/joints_img.png")
+    # joints_img = np.zeros_like(rgb_hw3_list[0])
+    # joints_img[joints_2d[:, 1].astype(np.int32), joints_2d[:, 0].astype(np.int32)] = 1
+    # plt.imshow(joints_img)
+    # plt.savefig("debug/joints_img.png")
 
     J_regressor_feet = torch.from_numpy(np.load(f"{smpl_model_path}/J_regressor_feet.npy")).float()
     feet_joints_all = vertices2joints(J_regressor_feet, gt_smpl.vertices)
@@ -314,30 +342,29 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
         all_joints_2d = all_joints_2d[:, :2]
         all_joints_2d = get_valid_indices(all_joints_2d, masks_img.shape)
 
-        masks_img[all_joints_2d[:, 1].astype(np.int32), all_joints_2d[:, 0].astype(np.int32)] = 3
-        plt.imshow(masks_img)
-        plt.savefig("debug/mask_img.png")
+        # masks_img[all_joints_2d[:, 1].astype(np.int32), all_joints_2d[:, 0].astype(np.int32)] = 3
+        # plt.imshow(masks_img)
+        # plt.savefig("debug/mask_img.png")
 
         for joint_idx in [0, 2]:
             gt_feet_2d = feet_joints_2d[joint_idx]
             if 0 <= gt_feet_2d[0] < w and 0 <= gt_feet_2d[1] < h:
                 gt_feet_3d = feet_joints[joint_idx]
                 valid_feet_2d = find_closest_point(masks_list[f], gt_feet_2d[1], gt_feet_2d[0])
-                # valid_feet_2d = gt_feet_2d.astype(np.int32)
-                valid_img = masks_list[f].astype(np.int32)
-                for r in range(-5, 6):
-                    for c in range(-5, 6):
-                        idx_y = int(valid_feet_2d[1]) + r
-                        idx_x = int(valid_feet_2d[0]) + c
-                        if 0 <= idx_y < valid_img.shape[0] and 0 <= idx_x < valid_img.shape[1]:
-                            valid_img[idx_y, idx_x] = 2
-                valid_img[all_joints_2d[:, 1].astype(np.int32), all_joints_2d[:, 0].astype(np.int32)] = 3
-                plt.imshow(valid_img)
-                plt.savefig("debug/valid_img.png")
+                # valid_img = masks_list[f].astype(np.int32)
+                # for r in range(-5, 6):
+                #     for c in range(-5, 6):
+                #         idx_y = int(valid_feet_2d[1]) + r
+                #         idx_x = int(valid_feet_2d[0]) + c
+                #         if 0 <= idx_y < valid_img.shape[0] and 0 <= idx_x < valid_img.shape[1]:
+                #             valid_img[idx_y, idx_x] = 2
+                # valid_img[all_joints_2d[:, 1].astype(np.int32), all_joints_2d[:, 0].astype(np.int32)] = 3
+                # plt.imshow(valid_img)
+                # plt.savefig("debug/valid_img.png")
 
-                depth_img = depth_hw_list[f]
-                plt.imshow(depth_img)
-                plt.savefig("debug/depth_img.png")
+                # depth_img = depth_hw_list[f]
+                # plt.imshow(depth_img)
+                # plt.savefig("debug/depth_img.png")
 
                 valid_feet_depth = depth_hw_list[f][valid_feet_2d[1], valid_feet_2d[0]]
                 scale_factor = gt_feet_3d[2] / valid_feet_depth
@@ -368,13 +395,6 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
     global_transl = smpl_motion['global_trans']
     local_transl = smpl_motion['local_trans']
     body_pose = smpl_motion['body_pose']
-
-    # gt_smpl = smpl(body_pose=axis_angle_to_matrix(tt(body_pose)),
-    #                 global_orient=axis_angle_to_matrix(tt(local_orient)),
-    #                 betas=tt(betas),
-    #                 transl=tt(local_transl),
-    #                 pose2rot=False,
-    #                 default_smpl=True)
     
     frame_id = int(smpl_motion['image'].split('/')[-1][:-4]) - 1
     global_orient_source = axis_angle_to_matrix(tt(global_orient[frame_id]))
@@ -409,14 +429,6 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
     #                             world_T_cam_b44)
     world_T_cam_b44[:, :3, 3] = world_T_cam_b44[:, :3, 3] * scale_factor
 
-    # change all points to initial camere frame
-    # for i, pts3d in enumerate(pts3d_list):
-    #     pts3d = pts3d * scale_factor
-    #     pts3d = np.concatenate(
-    #         [pts3d, np.ones([pts3d.shape[0], pts3d.shape[1], 1])], axis=-1)
-    #     pts3d = np.einsum('ij,hwj->hwi', world_T_cam_b44[0], pts3d)
-    #     pts3d_list[i] = pts3d[..., :3]
-
     frame_idxs = [int(frame_path[:-4]) - 1 for frame_path in paths]
     gt_cam_T_world = interpolate_se3(np.linalg.inv(world_T_cam_b44),
                              times=np.array(frame_idxs),
@@ -429,7 +441,7 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
         gt_vertices = gt_smpl.vertices[i]
 
         # transform to dust3r predicted initial camera frame
-        # cam_T_world = tt(gt_cam_T_world[0])
+        # cam_T_world = tt(world_T_cam_b44[0]) # tt(gt_cam_T_world[0])
         # gt_vertices = torch.concatenate([
         #     gt_vertices, torch.ones(gt_vertices.shape[0], 1)], dim=-1)
         # gt_vertices = torch.einsum('ij,nj->ni', cam_T_world, gt_vertices)
@@ -446,9 +458,6 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
     point_cloud = trimesh.PointCloud(
         point_cloud.reshape(-1, 3), colors=colors.reshape(-1, 3)
     )
-
-    initial_pc = trimesh.PointCloud(pts3d_list[0].reshape(-1, 3), colors=rgb_hw3_list[0].reshape(-1, 3))
-    initial_pc.export("debug/pointcloud.ply")
 
     meshes = []
     pbar = tqdm(zip(rgb_hw3_list, pts3d_list, masks_list), total=len(rgb_hw3_list))
