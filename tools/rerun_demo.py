@@ -91,7 +91,7 @@ if __name__ == "__main__":
     rr.script_setup(args, "mini-dust3r")
     # main(args.image_dir)
     for dir in os.listdir(args.image_dir):
-        dir = "jPx8Wgn9dOc_21"
+        dir = "7u6sKhNciNQ_49" # "_fuCbKaSuJ8_77"
         # if os.path.exists(f"../pedmotion/ground/{dir}"):
         #     continue
         folder = Path(f"{args.image_dir}/{dir}")

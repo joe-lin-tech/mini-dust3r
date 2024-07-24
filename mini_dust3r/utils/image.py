@@ -111,11 +111,16 @@ def load_images(
         supported_images_extensions += [".heic", ".heif"]
     supported_images_extensions = tuple(supported_images_extensions)
 
+    if len(folder_content) > 20: # TODO - hardcoded
+        folder_content = folder_content[::len(folder_content) // 20 + 1]
+
     imgs = []
     masks = []
+    paths = []
     for i, path in enumerate(folder_content):
         if i == 20: # TODO - hardcoded
             break
+        paths.append(path)
         if not path.lower().endswith(supported_images_extensions):
             continue
         img = exif_transpose(PIL.Image.open(os.path.join(root, path))).convert("RGB")
@@ -173,4 +178,4 @@ def load_images(
 
     if verbose:
         print(f" (Found {len(imgs)} images)")
-    return imgs, masks
+    return imgs, masks, paths

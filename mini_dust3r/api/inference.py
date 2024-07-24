@@ -1,7 +1,7 @@
 import rerun as rr
 from rerun.components import Material
 from pathlib import Path
-from typing import Literal
+from typing import Literal, List
 import copy
 import torch
 import numpy as np
@@ -12,6 +12,8 @@ from tqdm import tqdm
 import os
 import matplotlib.pyplot as plt
 import point_cloud_utils as pcu
+from scipy.interpolate import griddata
+import json
 
 from mini_dust3r.utils.image import load_images, ImageDict, MaskDict
 from mini_dust3r.inference import inference, Dust3rResult
@@ -21,7 +23,7 @@ from mini_dust3r.cloud_opt import global_aligner, GlobalAlignerMode
 from mini_dust3r.cloud_opt.base_opt import BasePCOptimizer, global_alignment_loop
 from mini_dust3r.cloud_opt.optimizer import ScaleOptimizer
 from mini_dust3r.viz import pts3d_to_trimesh, cat_meshes
-from mini_dust3r.utils.rot import axis_angle_to_matrix
+from mini_dust3r.utils.rot import axis_angle_to_matrix, interpolate_se3
 from dataclasses import dataclass
 from smplx import SMPLLayer
 from smplx.lbs import vertices2joints
@@ -37,6 +39,7 @@ class OptimizedResult:
     masks_list: Bool[np.ndarray, "h w"]
     point_cloud: trimesh.PointCloud
     mesh: trimesh.Trimesh
+    initial_mesh: trimesh.Trimesh
     gt_smpl_mesh: trimesh.Trimesh
     transl: Float32[np.ndarray, "b 3"]
 
@@ -52,7 +55,7 @@ def log_optimized_result(
             positions=optimized_result.point_cloud.vertices,
             colors=optimized_result.point_cloud.colors,
         ),
-        timeless=True,
+        # timeless=True,
     )
 
     mesh = optimized_result.mesh
@@ -63,7 +66,7 @@ def log_optimized_result(
             vertex_colors=mesh.visual.vertex_colors,
             triangle_indices=mesh.faces,
         ),
-        timeless=True,
+        # timeless=True,
     )
     pbar = tqdm(
         zip(
@@ -71,11 +74,11 @@ def log_optimized_result(
             optimized_result.depth_hw_list,
             optimized_result.K_b33,
             optimized_result.world_T_cam_b44,
-            optimized_result.gt_smpl_mesh
+            # optimized_result.gt_smpl_mesh
         ),
         total=len(optimized_result.rgb_hw3_list),
     )
-    for i, (rgb_hw3, depth_hw, k_33, world_T_cam_44, gt_smpl_mesh) in enumerate(pbar):
+    for i, (rgb_hw3, depth_hw, k_33, world_T_cam_44) in enumerate(pbar):
         camera_log_path = f"{parent_log_path}/camera_{i}"
         height, width, _ = rgb_hw3.shape
         rr.log(
@@ -102,18 +105,34 @@ def log_optimized_result(
         # rr.log(
         #     f"{camera_log_path}/pinhole/depth",
         #     rr.DepthImage(depth_hw),
+        #     timeless=True
         # )
 
+    for i, gt_smpl_mesh in enumerate(optimized_result.gt_smpl_mesh):
         # display smpl meshes
         rr.log(
-            f"{parent_log_path}/gt_smpl_mesh",
+            f"{parent_log_path}/gt_smpl_mesh_{i}",
             rr.Mesh3D(
                 vertex_positions=gt_smpl_mesh.vertices,
                 triangle_indices=gt_smpl_mesh.faces,
                 vertex_normals=gt_smpl_mesh.vertex_normals,
                 mesh_material=Material(albedo_factor=(0.0, 0.0, 1.0, 1.0)),
             ),
+            timeless=True
         )
+
+    with open("debug/preds/pointcloud.json", "rb") as f:
+        boxes = json.load(f)["bboxes_3d"][0]
+    import ipdb; ipdb.set_trace()
+    rr.log(
+        f"{parent_log_path}/boxes",
+        rr.Boxes3D(
+            sizes=[boxes[3], boxes[5], boxes[4]], # boxes[3:6],
+            centers=[boxes[0], boxes[2], boxes[1]], # boxes[:3],
+            rotations=rr.RotationAxisAngle(axis=[0, 1, 0],
+                                           angle=rr.datatypes.Angle(rad=boxes[6]))
+        )
+    )
     
     # v = np.array(optimized_result.point_cloud.vertices)
     # n_idx, n = pcu.estimate_point_cloud_normals_knn(v, 32)
@@ -122,10 +141,11 @@ def log_optimized_result(
     # n = n[mask]
     # n = n / np.linalg.norm(n, axis=-1, keepdims=True)
 
-    vertices = np.array(optimized_result.mesh.vertices)
-    normals = np.array(optimized_result.mesh.vertex_normals)
+    vertices = np.array(optimized_result.initial_mesh.vertices)
+    normals = np.array(optimized_result.initial_mesh.vertex_normals)
     normals = normals / np.linalg.norm(normals, axis=-1, keepdims=True)
-    mask = (np.argmax(np.abs(normals), axis=-1) == 1) & (normals[:, 1] > 0)
+    mask = (np.argmax(np.abs(normals), axis=-1) == 1) & (normals[:, 1] > 0) & \
+        (vertices[:, 1] >= optimized_result.gt_smpl_mesh[0].vertices[:, 1].min())
     vertices = vertices[mask]
     normals = normals[mask]
 
@@ -149,12 +169,32 @@ def log_optimized_result(
     size = np.array([size_x, size_z])
     lower = np.array([grid_size[0], grid_size[2]])
 
-    points -= optimized_result.transl[0]
+    # transl = np.concatenate([optimized_result.transl[0], [1]])
+    # transl = optimized_result.world_T_cam_b44[0] @ transl
+
+    points[:, [0, 2]] -= optimized_result.transl[0, [0, 2]]
     points = points[(grid_size[0] <= points[:, 0]) & (points[:, 0] <= grid_size[1])
                     & (grid_size[2] <= points[:, 2]) & (points[:, 2] <= grid_size[3])]
+    positions = np.copy(points)
+    positions[:, [0, 2]] += optimized_result.transl[0, [0, 2]]
+    rr.log(
+        f"{parent_log_path}/ground",
+        rr.Points3D(
+            positions=positions,
+            colors=[0, 255, 0]
+        ),
+        timeless=True,
+    )
     indices = (points[:, [0, 2]] - lower) // size
     indices = indices.astype(np.int32)
     ground_map[indices[:, 0], indices[:, 1]] = points[:, 1]
+
+    try:
+        interpolated = griddata(np.argwhere(ground_map != 0.), ground_map[ground_map != 0.],
+            np.argwhere(ground_map == 0.), method='linear', fill_value=0.)
+        ground_map[ground_map == 0.] = interpolated
+    except:
+        pass
 
     return ground_map
     
@@ -174,7 +214,8 @@ def get_valid_indices(indices, shape):
 def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
                      smpl_path: str = "data/citywalkers/full_all_with_measurements.pkl",
                      smpl_model_path: str = "data/smpl",
-                     image_dir: str = "data/citywalkers/_fuCbKaSuJ8_77/images") -> OptimizedResult:
+                     image_dir: str = "data/citywalkers/_fuCbKaSuJ8_77/images",
+                     paths: List[str] = []) -> OptimizedResult:
     ### get camera parameters K and T
     K_b33: Float32[np.ndarray, "b 3 3"] = scene.get_intrinsics().numpy(force=True)
     world_T_cam_b44: Float32[np.ndarray, "b 4 4"] = scene.get_im_poses().numpy(
@@ -214,41 +255,17 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
     smpl = SMPLLayer(model_path=smpl_model_path)
     tt = lambda x: torch.Tensor(x).float()
 
-    global_orient = smpl_motion['global_orient']
     local_orient = smpl_motion['local_orient']
     betas = smpl_motion['betas']
-    transl = smpl_motion['global_trans']
     local_transl = smpl_motion['local_trans']
     body_pose = smpl_motion['body_pose']
 
-    global_orient_source = axis_angle_to_matrix(tt(global_orient))
-    global_orient_target = axis_angle_to_matrix(tt(local_orient))
-    source_to_target_rotation = global_orient_target @ global_orient_source.transpose(1, 2)
-
-    global_orient = axis_angle_to_matrix(tt(global_orient))
-    global_orient = torch.einsum('bij,bjk->bik', source_to_target_rotation, global_orient)
-
-    transl_source = tt(transl).unsqueeze(-1)
-    transl_target = tt(local_transl).unsqueeze(-1)
-    source_to_target_translation = transl_target - torch.einsum('bij,bjk->bik', source_to_target_rotation, transl_source)
-    
-    transl = tt(transl).unsqueeze(-1)
-    transl = torch.einsum('bij,bjk->bik', source_to_target_rotation, transl) + source_to_target_translation
-    transl = transl.squeeze(-1)
-
-    # use mean shape as body shape
-    mean_beta = betas.mean(axis=0, keepdims=True)
-    betas = mean_beta.repeat(len(betas), 0)
-
     gt_smpl = smpl(body_pose=axis_angle_to_matrix(tt(body_pose)),
-                     global_orient=tt(global_orient),
-                     betas=tt(betas),
-                     transl=tt(transl),
-                     pose2rot=False,
-                     default_smpl=True)
-    
-    # gt_smpl_mesh = [trimesh.Trimesh(vertices=gt_smpl.vertices[int(frame_path[:-4]) - 1, :, :3],
-    #                                 faces=smpl.faces) for frame_path in os.listdir(image_dir)]
+                    global_orient=axis_angle_to_matrix(tt(local_orient)),
+                    betas=tt(betas),
+                    transl=tt(local_transl),
+                    pose2rot=False,
+                    default_smpl=True)
 
     joints = vertices2joints(smpl.J_regressor, gt_smpl.vertices).cpu().numpy()
 
@@ -272,7 +289,7 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
     all_scales = []
     w, h = rgb_hw3_list[0].shape[1], rgb_hw3_list[0].shape[0]
 
-    for f, frame_path in enumerate(sorted(os.listdir(image_dir))):
+    for f, frame_path in enumerate(paths): # enumerate(sorted(os.listdir(image_dir))):
         if f == 20: # TODO - hardcoded
             break
         i = int(frame_path[:-4]) - 1
@@ -305,8 +322,8 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
             gt_feet_2d = feet_joints_2d[joint_idx]
             if 0 <= gt_feet_2d[0] < w and 0 <= gt_feet_2d[1] < h:
                 gt_feet_3d = feet_joints[joint_idx]
-                # valid_feet_2d = find_closest_point(masks_list[f], gt_feet_2d[1], gt_feet_2d[0])
-                valid_feet_2d = gt_feet_2d.astype(np.int32)
+                valid_feet_2d = find_closest_point(masks_list[f], gt_feet_2d[1], gt_feet_2d[0])
+                # valid_feet_2d = gt_feet_2d.astype(np.int32)
                 valid_img = masks_list[f].astype(np.int32)
                 for r in range(-5, 6):
                     for c in range(-5, 6):
@@ -342,36 +359,81 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
     scale_factor = scaled_scene.global_scale.exp().item()
     print(f"scale after optimization: {scale_factor}")
 
-    normalize_transform = np.linalg.inv(world_T_cam_b44[0])
-
-    world_T_cam_b44 = np.einsum('ij,bjk->bik', normalize_transform,
-                                world_T_cam_b44)
-    world_T_cam_b44[:, :3, 3] = world_T_cam_b44[:, :3, 3] * scale_factor
-
     pts3d_list = [pts3d * scale_factor for pts3d in pts3d_list]
     depth_hw_list = [depth * scale_factor for depth in depth_hw_list]
 
-    global_orient = smpl_motion['local_orient']
+    global_orient = smpl_motion['global_orient']
+    local_orient = smpl_motion['local_orient']
     betas = smpl_motion['betas']
-    transl = smpl_motion['local_trans']
+    global_transl = smpl_motion['global_trans']
+    local_transl = smpl_motion['local_trans']
     body_pose = smpl_motion['body_pose']
 
-    gt_smpl = smpl(body_pose=axis_angle_to_matrix(tt(body_pose)),
-                    global_orient=axis_angle_to_matrix(tt(global_orient)),
-                    betas=tt(betas),
-                    transl=tt(transl),
-                    pose2rot=False,
-                    default_smpl=True)
+    # gt_smpl = smpl(body_pose=axis_angle_to_matrix(tt(body_pose)),
+    #                 global_orient=axis_angle_to_matrix(tt(local_orient)),
+    #                 betas=tt(betas),
+    #                 transl=tt(local_transl),
+    #                 pose2rot=False,
+    #                 default_smpl=True)
+    
+    frame_id = int(smpl_motion['image'].split('/')[-1][:-4]) - 1
+    global_orient_source = axis_angle_to_matrix(tt(global_orient[frame_id]))
+    global_orient_target = axis_angle_to_matrix(tt(local_orient[frame_id]))
+    source_to_target_rotation = global_orient_target @ global_orient_source.T
+    # rotation matrix from standard frame to initial camera frame
+
+    global_orient = axis_angle_to_matrix(tt(global_orient))
+    global_orient = source_to_target_rotation @ global_orient
+
+    transl_source = tt(global_transl[[frame_id]])
+    transl_target = tt(local_transl[[frame_id]])
+    source_to_target_translation = transl_target.T - source_to_target_rotation @ transl_source.T
+    # translation to position in initial camera frame
+
+    transl = tt(global_transl)
+    transl = source_to_target_rotation @ transl.T + source_to_target_translation
+    transl = transl.T
+
+    body_pose = axis_angle_to_matrix(tt(body_pose))
+    betas = tt(betas)
+
+    gt_smpl = smpl(body_pose=tt(body_pose),
+            global_orient=tt(global_orient),
+            betas=tt(betas),
+            transl=tt(transl),
+            pose2rot=False,
+            default_smpl=True)
+
+    # normalize_transform = np.linalg.inv(world_T_cam_b44[0])
+    # world_T_cam_b44 = np.einsum('ij,bjk->bik', normalize_transform,
+    #                             world_T_cam_b44)
+    world_T_cam_b44[:, :3, 3] = world_T_cam_b44[:, :3, 3] * scale_factor
+
+    # change all points to initial camere frame
+    # for i, pts3d in enumerate(pts3d_list):
+    #     pts3d = pts3d * scale_factor
+    #     pts3d = np.concatenate(
+    #         [pts3d, np.ones([pts3d.shape[0], pts3d.shape[1], 1])], axis=-1)
+    #     pts3d = np.einsum('ij,hwj->hwi', world_T_cam_b44[0], pts3d)
+    #     pts3d_list[i] = pts3d[..., :3]
+
+    frame_idxs = [int(frame_path[:-4]) - 1 for frame_path in paths]
+    gt_cam_T_world = interpolate_se3(np.linalg.inv(world_T_cam_b44),
+                             times=np.array(frame_idxs),
+                             query_times=np.arange(frame_id, frame_idxs[-1] + 1))
 
     gt_smpl_mesh = []
-    for f, frame_path in enumerate(sorted(os.listdir(image_dir))):
-        if f == 20: # TODO - hardcoded
-            break
-        # camera_transform = tt(world_T_cam_b44[f])
-        gt_vertices = gt_smpl.vertices[f]
+    for i in range(frame_id, frame_idxs[-1] + 1): # gt_smpl.vertices.shape[0]):
+        # if not i in frame_idxs:
+        #     continue
+        gt_vertices = gt_smpl.vertices[i]
+
+        # transform to dust3r predicted initial camera frame
+        # cam_T_world = tt(gt_cam_T_world[0])
         # gt_vertices = torch.concatenate([
         #     gt_vertices, torch.ones(gt_vertices.shape[0], 1)], dim=-1)
-        # gt_vertices = torch.einsum('ij,nj->ni', camera_transform, gt_vertices)
+        # gt_vertices = torch.einsum('ij,nj->ni', cam_T_world, gt_vertices)
+
         gt_smpl_mesh.append(trimesh.Trimesh(vertices=gt_vertices[:, :3], 
                                             faces=smpl.faces))
 
@@ -385,12 +447,16 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
         point_cloud.reshape(-1, 3), colors=colors.reshape(-1, 3)
     )
 
+    initial_pc = trimesh.PointCloud(pts3d_list[0].reshape(-1, 3), colors=rgb_hw3_list[0].reshape(-1, 3))
+    initial_pc.export("debug/pointcloud.ply")
+
     meshes = []
     pbar = tqdm(zip(rgb_hw3_list, pts3d_list, masks_list), total=len(rgb_hw3_list))
     for rgb_hw3, pts3d, mask in pbar:
         meshes.append(pts3d_to_trimesh(rgb_hw3, pts3d, mask))
 
     mesh = trimesh.Trimesh(**cat_meshes(meshes))
+    initial_mesh = trimesh.Trimesh(**meshes[0])
 
     optimised_result = OptimizedResult(
         K_b33=K_b33,
@@ -401,8 +467,9 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
         masks_list=masks_list,
         point_cloud=point_cloud,
         mesh=mesh,
+        initial_mesh=initial_mesh,
         gt_smpl_mesh=gt_smpl_mesh,
-        transl=transl
+        transl=transl.cpu().numpy() # local_transl
     )
     return optimised_result
 
@@ -437,11 +504,11 @@ def inference_dust3r(
         ValueError: If `image_dir_or_list` is neither a list of paths nor a path.
     """
     if isinstance(image_dir_or_list, list):
-        imgs, masks = load_images(
+        imgs, masks, paths = load_images(
             folder_or_list=image_dir_or_list, size=image_size, verbose=True
         )
     elif isinstance(image_dir_or_list, Path):
-        imgs, masks = load_images(
+        imgs, masks, paths = load_images(
             folder_or_list=str(image_dir_or_list), size=image_size, verbose=True
         )
     else:
@@ -505,7 +572,7 @@ def inference_dust3r(
         np.array([[cx, cy]]).repeat(len(imgs), axis=0))
 
     # get the optimized result from the scene
-    optimized_result: OptimizedResult = scene_to_results(scene, min_conf_thr, image_dir=str(image_dir_or_list))
-    optimized_result.point_cloud.export("debug/pointcloud.ply")
+    optimized_result: OptimizedResult = scene_to_results(scene, min_conf_thr, image_dir=str(image_dir_or_list), paths=paths)
+    # optimized_result.point_cloud.export("debug/pointcloud.ply")
 
     return optimized_result
