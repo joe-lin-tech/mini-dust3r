@@ -39,6 +39,7 @@ class OptimizedResult:
     conf_hw_list: list[Float32[np.ndarray, "h w"]]
     masks_list: Bool[np.ndarray, "h w"]
     point_cloud: trimesh.PointCloud
+    initial_point_cloud: trimesh.PointCloud
     mesh: trimesh.Trimesh
     initial_mesh: trimesh.Trimesh
     gt_smpl_mesh: trimesh.Trimesh
@@ -56,7 +57,14 @@ def log_optimized_result(
             positions=optimized_result.point_cloud.vertices,
             colors=optimized_result.point_cloud.colors,
         ),
-        # timeless=True,
+    )
+
+    rr.log(
+        f"{parent_log_path}/initial",
+        rr.Points3D(
+            positions=optimized_result.initial_point_cloud.vertices,
+            colors=optimized_result.initial_point_cloud.colors
+        )
     )
 
     # mesh = optimized_result.mesh
@@ -142,23 +150,45 @@ def log_optimized_result(
         "bicycle": 0.1,
         "sign": 0.05,
         "trashcan": 0.25,
-        "post": 0.02
+        "post": 0.02,
+        "bus": 12,
+        "phonebooth": 1.5
     }
 
+    lr_thres = 1
     for i, box in enumerate(boxes):
         cx = int((box[0] + box[2]) / 2)
         cy = int((box[1] + box[3]) / 2)
+        cl = int(box[0] + (cx - box[0]) / 2)
+        cr = int(box[2] - (box[2] - cx) / 2)
         box = np.vstack([box.reshape(2, 2).T, np.ones((1, 2))])
         depth = boxes_dict["depth"] if classes[i] == "person" else optimized_result.depth_hw_list[0] # generalize to moving objects
-        box *= depth[cy, cx]
-        box = np.linalg.inv(optimized_result.K_b33[0]) @ box
+        # depth = boxes_dict["depth"]
 
-        obj_w = np.abs(box[0, 1] - box[0, 0])
-        obj_h = np.abs(box[1, 1] - box[1, 0])
-        obj_d = depth_by_class[classes[i]]
-        obj_cx = min(box[0]) + obj_w / 2
-        obj_cy = min(box[1]) + obj_h / 2
-        obj_cz = min(box[2]) + obj_d / 2
+        dl, dr = depth[cy, cl], depth[cy, cr]
+
+        mid = np.argmin(depth[cy, cl:cr])
+        dm = depth[cy, mid + cl]
+        mid = np.array([[box[0, 0] + mid, (box[1, 0] + box[1, 1]) / 2, 1]]).T * dm
+        mid = np.linalg.inv(optimized_result.K_b33[0]) @ mid
+        box *= depth[cy, cx] # [dl, dr] if dl - dr > lr_thres else depth[cy, cx]
+
+        box = np.linalg.inv(optimized_result.K_b33[0]) @ box
+        
+        if False: # dl - dr > lr_thres: # assume rotated
+            obj_w = np.sqrt((mid[0, 0] - box[0, 0]) ** 2 + (mid[2, 0] - box[2, 0]) ** 2)
+            obj_h = np.abs(box[1, 1] - box[1, 0])
+            obj_d = np.sqrt((box[0, 1] - mid[0, 0]) ** 2 + (box[2, 1] - mid[2, 0]) ** 2)
+            obj_cx = (min(box[0]) + max(box[0])) / 2
+            obj_cy = (min(box[1]) + max(box[1])) / 2
+            obj_cz = (box[2, 0] + box[2, 1]) / 2
+        else: # assume front plane parallel
+            obj_w = np.abs(box[0, 1] - box[0, 0])
+            obj_h = np.abs(box[1, 1] - box[1, 0])
+            obj_d = depth_by_class[classes[i]] if classes[i] in depth_by_class else 3
+            obj_cx = min(box[0]) + obj_w / 2
+            obj_cy = min(box[1]) + obj_h / 2
+            obj_cz = min(box[2]) + obj_d / 2
 
         rr.log(
             f"{parent_log_path}/boxes/box_{i}",
@@ -197,14 +227,12 @@ def log_optimized_result(
     size = np.array([size_x, size_z])
     lower = np.array([grid_size[0], grid_size[2]])
 
-    # transl = np.concatenate([optimized_result.transl[0], [1]])
-    # transl = optimized_result.world_T_cam_b44[0] @ transl
-
-    points[:, [0, 2]] -= optimized_result.transl[0, [0, 2]]
+    points[:, [0, 2]] -= optimized_result.transl[[0, 2]]
     points = points[(grid_size[0] <= points[:, 0]) & (points[:, 0] <= grid_size[1])
                     & (grid_size[2] <= points[:, 2]) & (points[:, 2] <= grid_size[3])]
     positions = np.copy(points)
-    positions[:, [0, 2]] += optimized_result.transl[0, [0, 2]]
+    positions[:, [0, 2]] += optimized_result.transl[[0, 2]]
+
     rr.log(
         f"{parent_log_path}/ground",
         rr.Points3D(
@@ -424,30 +452,33 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
             pose2rot=False,
             default_smpl=True)
 
-    # normalize_transform = np.linalg.inv(world_T_cam_b44[0])
-    # world_T_cam_b44 = np.einsum('ij,bjk->bik', normalize_transform,
-    #                             world_T_cam_b44)
     world_T_cam_b44[:, :3, 3] = world_T_cam_b44[:, :3, 3] * scale_factor
 
     frame_idxs = [int(frame_path[:-4]) - 1 for frame_path in paths]
-    gt_cam_T_world = interpolate_se3(np.linalg.inv(world_T_cam_b44),
-                             times=np.array(frame_idxs),
-                             query_times=np.arange(frame_id, frame_idxs[-1] + 1))
+    # gt_cam_T_world = interpolate_se3(np.linalg.inv(world_T_cam_b44),
+    #                          times=np.array(frame_idxs),
+    #                          query_times=np.arange(frame_id, frame_idxs[-1] + 1))
 
     gt_smpl_mesh = []
-    for i in range(frame_id, frame_idxs[-1] + 1): # gt_smpl.vertices.shape[0]):
-        # if not i in frame_idxs:
-        #     continue
+    for i in range(frame_id, frame_idxs[-1] + 1):
         gt_vertices = gt_smpl.vertices[i]
 
         # transform to dust3r predicted initial camera frame
-        # cam_T_world = tt(world_T_cam_b44[0]) # tt(gt_cam_T_world[0])
+        world_T_cam = tt(world_T_cam_b44[0])
+        gt_vertices = torch.concatenate([
+            gt_vertices, torch.ones(gt_vertices.shape[0], 1)], dim=-1)
+        gt_vertices = torch.einsum('ij,nj->ni', world_T_cam, gt_vertices)
+
+        # cam_T_world = tt(gt_cam_T_world[0])
         # gt_vertices = torch.concatenate([
         #     gt_vertices, torch.ones(gt_vertices.shape[0], 1)], dim=-1)
         # gt_vertices = torch.einsum('ij,nj->ni', cam_T_world, gt_vertices)
 
         gt_smpl_mesh.append(trimesh.Trimesh(vertices=gt_vertices[:, :3], 
                                             faces=smpl.faces))
+        
+    transl = torch.concatenate([transl[0], torch.ones(1)]).unsqueeze(-1)
+    transl = (world_T_cam @ transl).squeeze(-1)
 
     point_cloud: Float32[np.ndarray, "num_points 3"] = np.concatenate(
         [p[m] for p, m in zip(pts3d_list, masks_list)]
@@ -455,9 +486,11 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
     colors: Float32[np.ndarray, "num_points 3"] = np.concatenate(
         [p[m] for p, m in zip(rgb_hw3_list, masks_list)]
     )
+
     point_cloud = trimesh.PointCloud(
         point_cloud.reshape(-1, 3), colors=colors.reshape(-1, 3)
     )
+    initial_point_cloud = trimesh.PointCloud(pts3d_list[0].reshape(-1, 3), colors=rgb_hw3_list[0].reshape(-1, 3))
 
     meshes = []
     pbar = tqdm(zip(rgb_hw3_list, pts3d_list, masks_list), total=len(rgb_hw3_list))
@@ -475,10 +508,11 @@ def scene_to_results(scene: BasePCOptimizer, min_conf_thr: int,
         conf_hw_list=conf_hw_list,
         masks_list=masks_list,
         point_cloud=point_cloud,
+        initial_point_cloud=initial_point_cloud,
         mesh=mesh,
         initial_mesh=initial_mesh,
         gt_smpl_mesh=gt_smpl_mesh,
-        transl=transl.cpu().numpy() # local_transl
+        transl=transl.cpu().numpy()
     )
     return optimised_result
 
